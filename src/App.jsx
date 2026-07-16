@@ -806,9 +806,50 @@ export default function PlacasApp() {
   const [priceLabel, setPriceLabel] = useState("Precio en base doble");
   const [price, setPrice] = useState("USD 2.100");
   const [accent, setAccent] = useState(ACCENTS[0].value);
-  const [layoutStyle, setLayoutStyle] = useState("promo"); // promo | titular
-  const [titleScale, setTitleScale] = useState(1); // 0.75 - 1.25
+  const [layoutStyle, setLayoutStyle] = useState("promo"); // promo | titular (preset de posiciones)
+  const [titleScale, setTitleScale] = useState(1); // 0.75 - 1.25 (compatibilidad, ya no se usa directo)
   const [scrimOpacity, setScrimOpacity] = useState(0.5); // 0 - 0.8
+
+  // ---- Logo: texto, imagen, o sin logo ----
+  const [logo, setLogo] = useState({ mode: "text", text: "PROVIAJES" }); // mode: text | image | none
+  const [logoImageUrl, setLogoImageUrl] = useState("");
+  const logoImageElRef = useRef(null);
+
+  // ---- Posición / tamaño de cada elemento sobre la placa (editable
+  // arrastrando directamente en la vista previa). x/y en % del lienzo,
+  // fontSize en unidades del lienzo (1080px de ancho base). Se comparte
+  // entre TODOS los editores (imagen y video), así los cambios se ven
+  // reflejados en todos lados a la vez.
+  const [elementBox, setElementBox] = useState({
+    logo: { x: 5, y: 3, fontSize: 34 },
+    badge: { x: 5, y: 9, fontSize: 30 },
+    title: { x: 5, y: 58, fontSize: 96 },
+    bullets: { x: 5, y: 77, fontSize: 40 },
+    price: { x: 5, y: 88, fontSize: 88 },
+  });
+  const [selectedElement, setSelectedElement] = useState(null);
+
+  const LAYOUT_PRESETS = {
+    promo: {
+      logo: { x: 5, y: 3, fontSize: 34 },
+      badge: { x: 5, y: 9, fontSize: 30 },
+      title: { x: 5, y: 58, fontSize: 96 },
+      bullets: { x: 5, y: 77, fontSize: 40 },
+      price: { x: 5, y: 88, fontSize: 88 },
+    },
+    titular: {
+      logo: { x: 5, y: 3, fontSize: 32 },
+      badge: { x: 5, y: 9, fontSize: 28 },
+      title: { x: 5, y: 40, fontSize: 100 },
+      bullets: { x: 5, y: 86, fontSize: 34 },
+      price: { x: 5, y: 88, fontSize: 80 },
+    },
+  };
+
+  const applyLayoutPreset = (presetKey) => {
+    setLayoutStyle(presetKey);
+    setElementBox(LAYOUT_PRESETS[presetKey]);
+  };
 
   // ---- Fondo: modo (interno, según pantalla) ----
   const [bgMode, setBgMode] = useState("video"); // video | solid
@@ -918,6 +959,26 @@ export default function PlacasApp() {
     }
   };
 
+  // ---- Cargar y guardar la API key de Pexels automáticamente ----
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await storage.get("pexels-api-key");
+        if (res && res.value) setApiKey(res.value);
+      } catch (e) {
+        // todavía no había ninguna key guardada
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!apiKey) return;
+    const t = setTimeout(() => {
+      storage.set("pexels-api-key", apiKey).catch(() => {});
+    }, 500);
+    return () => clearTimeout(t);
+  }, [apiKey]);
+
   // =====================================================================
   // BÚSQUEDA / CARGA DE VIDEO (Pexels)
   // =====================================================================
@@ -948,6 +1009,10 @@ export default function PlacasApp() {
     }
   };
 
+  const [videoPage, setVideoPage] = useState(1);
+  const [videoHasMore, setVideoHasMore] = useState(true);
+  const [videoLoadingMore, setVideoLoadingMore] = useState(false);
+
   const doSearch = async () => {
     if (!apiKey.trim()) {
       setSearchError("Necesitás pegar tu API key de Pexels primero.");
@@ -957,9 +1022,11 @@ export default function PlacasApp() {
     setSearching(true);
     setSearchError("");
     setResults([]);
+    setVideoPage(1);
+    setVideoHasMore(true);
     try {
       const res = await fetch(
-        `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=12&orientation=portrait`,
+        `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=12&page=1&orientation=portrait`,
         { headers: { Authorization: apiKey.trim() } }
       );
       if (res.status === 401) {
@@ -974,6 +1041,7 @@ export default function PlacasApp() {
       }
       const data = await res.json();
       setResults(data.videos || []);
+      setVideoHasMore((data.videos || []).length >= 12);
       if (!data.videos || data.videos.length === 0) {
         setSearchError("Sin resultados. Probá con otro término (en inglés suele dar más resultados).");
       }
@@ -981,6 +1049,29 @@ export default function PlacasApp() {
       setSearchError("No se pudo conectar con Pexels. Revisá tu conexión.");
     }
     setSearching(false);
+  };
+
+  const loadMoreVideos = async () => {
+    if (!apiKey.trim() || !query.trim() || videoLoadingMore) return;
+    const nextPage = videoPage + 1;
+    setVideoLoadingMore(true);
+    try {
+      const res = await fetch(
+        `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=12&page=${nextPage}&orientation=portrait`,
+        { headers: { Authorization: apiKey.trim() } }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setResults((prev) => [...prev, ...(data.videos || [])]);
+        setVideoHasMore((data.videos || []).length >= 12);
+        setVideoPage(nextPage);
+      } else {
+        setVideoHasMore(false);
+      }
+    } catch (e) {
+      setVideoHasMore(false);
+    }
+    setVideoLoadingMore(false);
   };
 
   const pickBestFile = (video) => {
@@ -1007,10 +1098,10 @@ export default function PlacasApp() {
   // =====================================================================
   // BÚSQUEDA / CARGA DE FOTOS (Pexels)
   // =====================================================================
-  const searchPexelsPhotos = async (q, perPage = 8) => {
+  const searchPexelsPhotos = async (q, perPage = 8, page = 1) => {
     if (!apiKey.trim() || !q.trim()) return [];
     const res = await fetch(
-      `https://api.pexels.com/v1/search?query=${encodeURIComponent(q)}&per_page=${perPage}&orientation=portrait`,
+      `https://api.pexels.com/v1/search?query=${encodeURIComponent(q)}&per_page=${perPage}&page=${page}&orientation=portrait`,
       { headers: { Authorization: apiKey.trim() } }
     );
     if (!res.ok) throw new Error(`status ${res.status}`);
@@ -1046,19 +1137,41 @@ export default function PlacasApp() {
     setBgImageLoading(false);
   };
 
+  const [photoPage, setPhotoPage] = useState(1);
+  const [photoHasMore, setPhotoHasMore] = useState(true);
+  const [photoLoadingMore, setPhotoLoadingMore] = useState(false);
+
   const searchPhotosManually = async () => {
     if (!photoQuery.trim()) return;
     setPhotoSearching(true);
     setPhotoSearchError("");
     setPhotoResults([]);
+    setPhotoPage(1);
+    setPhotoHasMore(true);
     try {
-      const photos = await searchPexelsPhotos(photoQuery, 8);
+      const photos = await searchPexelsPhotos(photoQuery, 8, 1);
       setPhotoResults(photos);
+      setPhotoHasMore(photos.length >= 8);
       if (photos.length === 0) setPhotoSearchError("Sin resultados. Probá con otro término, en inglés.");
     } catch (e) {
       setPhotoSearchError("No se pudo buscar fotos. Revisá tu API key o tu conexión.");
     }
     setPhotoSearching(false);
+  };
+
+  const loadMorePhotos = async () => {
+    if (!photoQuery.trim() || photoLoadingMore) return;
+    const nextPage = photoPage + 1;
+    setPhotoLoadingMore(true);
+    try {
+      const photos = await searchPexelsPhotos(photoQuery, 8, nextPage);
+      setPhotoResults((prev) => [...prev, ...photos]);
+      setPhotoHasMore(photos.length >= 8);
+      setPhotoPage(nextPage);
+    } catch (e) {
+      setPhotoHasMore(false);
+    }
+    setPhotoLoadingMore(false);
   };
 
   const selectPhoto = async (photo) => {
@@ -1084,6 +1197,24 @@ export default function PlacasApp() {
       loadImageElement(url)
         .then((img) => (bgImageElRef.current = img))
         .catch(() => (bgImageElRef.current = null));
+    } finally {
+      e.target.value = "";
+    }
+  };
+
+  const uploadedLogoUrlRef = useRef(null);
+  const handleLogoUpload = (e) => {
+    try {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      if (uploadedLogoUrlRef.current) URL.revokeObjectURL(uploadedLogoUrlRef.current);
+      const url = URL.createObjectURL(file);
+      uploadedLogoUrlRef.current = url;
+      setLogoImageUrl(url);
+      setLogo((prev) => ({ ...prev, mode: "image" }));
+      loadImageElement(url)
+        .then((img) => (logoImageElRef.current = img))
+        .catch(() => (logoImageElRef.current = null));
     } finally {
       e.target.value = "";
     }
@@ -1247,7 +1378,7 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
     setPriceLabel(ideaObj.priceLabel || "");
     setPrice(ideaObj.price || "");
     setAccent(ACCENTS[Math.abs(hashCode(ideaObj.title || ideaObj.badge || "")) % ACCENTS.length].value);
-    setLayoutStyle(ideaObj.contentType === "educativo" ? "titular" : "promo");
+    applyLayoutPreset(ideaObj.contentType === "educativo" ? "titular" : "promo");
     setDownloadUrl("");
     setImageUrl("");
     setVideoError("");
@@ -1363,88 +1494,12 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
     ctx.fillRect(0, 0, CW, CH);
   };
 
-  const renderCanvas = (canvas, video) => {
+  // Renderizador único: dibuja fondo (video/foto/color), el logo (texto,
+  // imagen o nada), y cada elemento en la posición/tamaño que tenga
+  // guardado en elementBox (editable arrastrando en la vista previa).
+  const renderPlaca = (canvas, video) => {
     const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, CW, CH);
-
-    if (video && video.videoWidth) {
-      const scale = Math.max(CW / video.videoWidth, CH / video.videoHeight);
-      const dw = video.videoWidth * scale;
-      const dh = video.videoHeight * scale;
-      ctx.drawImage(video, (CW - dw) / 2, (CH - dh) / 2, dw, dh);
-    } else {
-      paintFallbackBackground(ctx);
-    }
-
-    const topGrad = ctx.createLinearGradient(0, 0, 0, 420);
-    topGrad.addColorStop(0, "rgba(0,0,0,0.55)");
-    topGrad.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = topGrad;
-    ctx.fillRect(0, 0, CW, 420);
-
-    ctx.font = "700 34px Manrope, sans-serif";
-    ctx.fillStyle = "rgba(255,255,255,0.85)";
     ctx.textBaseline = "alphabetic";
-    ctx.fillText("PROVIAJES", 56, 90);
-
-    if (badge) {
-      ctx.font = "800 30px Manrope, sans-serif";
-      const badgeWidth = ctx.measureText(badge.toUpperCase()).width + 64;
-      ctx.fillStyle = accent;
-      roundRect(ctx, 56, 130, badgeWidth, 64, 32);
-      ctx.fill();
-      ctx.fillStyle = "#0b0b0b";
-      ctx.fillText(badge.toUpperCase(), 88, 172);
-    }
-
-    const botGrad = ctx.createLinearGradient(0, CH - 950, 0, CH);
-    botGrad.addColorStop(0, "rgba(0,0,0,0)");
-    botGrad.addColorStop(0.35, `rgba(0,0,0,${scrimOpacity})`);
-    botGrad.addColorStop(1, `rgba(0,0,0,${Math.min(0.95, scrimOpacity + 0.4)})`);
-    ctx.fillStyle = botGrad;
-    ctx.fillRect(0, CH - 950, CW, 950);
-
-    ctx.fillStyle = "#ffffff";
-    const titleSize = Math.round(96 * titleScale);
-    ctx.font = `800 ${titleSize}px Manrope, sans-serif`;
-    let y = CH - 780;
-    y = wrapText(ctx, title, 56, y, CW - 112, titleSize + 6);
-
-    y += 20;
-    ctx.fillStyle = accent;
-    ctx.fillRect(56, y, 120, 8);
-    y += 60;
-
-    ctx.font = "500 40px Manrope, sans-serif";
-    bullets.forEach((b) => {
-      if (!b.trim()) return;
-      ctx.fillStyle = accent;
-      ctx.font = "800 40px Manrope, sans-serif";
-      ctx.fillText("✓", 56, y);
-      ctx.fillStyle = "#f2f2f2";
-      ctx.font = "500 40px Manrope, sans-serif";
-      y = wrapText(ctx, b, 110, y, CW - 170, 48);
-      y += 18;
-    });
-
-    if (priceLabel || price) {
-      const priceY = CH - 170;
-      if (priceLabel) {
-        ctx.font = "600 32px Manrope, sans-serif";
-        ctx.fillStyle = "rgba(255,255,255,0.75)";
-        ctx.fillText(priceLabel, 56, priceY);
-      }
-      if (price) {
-        ctx.font = "800 88px Manrope, sans-serif";
-        ctx.fillStyle = accent;
-        ctx.fillText(price, 56, priceY + 82);
-      }
-    }
-  };
-
-  const renderTitularCanvas = (canvas, video) => {
-    const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#0a0a0a";
     ctx.fillRect(0, 0, CW, CH);
 
@@ -1467,28 +1522,81 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
       paintFallbackBackground(ctx);
     }
 
-    ctx.textBaseline = "alphabetic";
-    ctx.font = "700 32px Manrope, sans-serif";
-    ctx.fillStyle = "rgba(255,255,255,0.8)";
-    ctx.fillText("PROVIAJES", 56, 90);
+    // Logo
+    if (logo.mode === "text" && logo.text) {
+      const b = elementBox.logo;
+      ctx.font = `700 ${b.fontSize}px Manrope, sans-serif`;
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.fillText(logo.text, (b.x / 100) * CW, (b.y / 100) * CH + b.fontSize * 0.8);
+    } else if (logo.mode === "image" && logoImageElRef.current && logoImageElRef.current.naturalWidth) {
+      const b = elementBox.logo;
+      const img = logoImageElRef.current;
+      const targetH = b.fontSize * 1.8;
+      const targetW = (img.naturalWidth / img.naturalHeight) * targetH;
+      ctx.drawImage(img, (b.x / 100) * CW, (b.y / 100) * CH, targetW, targetH);
+    }
 
-    const lines = title.split("\n").filter((l) => l.trim());
-    const lineHeight = Math.round(108 * titleScale);
-    const blockHeight = lines.length * lineHeight;
-    let y = CH / 2 - blockHeight / 2 + 40;
-
-    ctx.font = `800 ${Math.round(100 * titleScale)}px Manrope, sans-serif`;
-    lines.forEach((line, i) => {
-      const isLast = i === lines.length - 1;
-      ctx.fillStyle = isLast ? accent : "#ffffff";
-      y = wrapText(ctx, line, 56, y, CW - 112, lineHeight);
-    });
-
-    const subtitle = bullets.find((b) => b.trim());
-    if (subtitle) {
-      ctx.font = "700 34px Manrope, sans-serif";
+    // Badge
+    if (badge) {
+      const b = elementBox.badge;
+      ctx.font = `800 ${b.fontSize}px Manrope, sans-serif`;
+      const bx = (b.x / 100) * CW;
+      const by = (b.y / 100) * CH;
+      const badgeWidth = ctx.measureText(badge.toUpperCase()).width + b.fontSize * 2;
+      const badgeHeight = b.fontSize * 2.1;
       ctx.fillStyle = accent;
-      wrapText(ctx, `→ ${subtitle}`, 56, CH - 140, CW - 112, 42);
+      roundRect(ctx, bx, by, badgeWidth, badgeHeight, badgeHeight / 2);
+      ctx.fill();
+      ctx.fillStyle = "#0b0b0b";
+      ctx.fillText(badge.toUpperCase(), bx + b.fontSize, by + badgeHeight * 0.68);
+    }
+
+    // Título
+    if (title) {
+      const b = elementBox.title;
+      const lines = title.split("\n").filter((l) => l.trim());
+      const lineHeight = Math.round(b.fontSize * 1.08);
+      ctx.font = `800 ${b.fontSize}px Manrope, sans-serif`;
+      let y = (b.y / 100) * CH + b.fontSize;
+      lines.forEach((line, i) => {
+        ctx.fillStyle = i === lines.length - 1 ? accent : "#ffffff";
+        y = wrapText(ctx, line, (b.x / 100) * CW, y, CW - (b.x / 100) * CW - 56, lineHeight);
+      });
+    }
+
+    // Incluye / bullets
+    const visibleBullets = bullets.filter((bl) => bl.trim());
+    if (visibleBullets.length > 0) {
+      const b = elementBox.bullets;
+      let y = (b.y / 100) * CH + b.fontSize;
+      const bx = (b.x / 100) * CW;
+      visibleBullets.forEach((bl) => {
+        ctx.fillStyle = accent;
+        ctx.font = `800 ${b.fontSize}px Manrope, sans-serif`;
+        ctx.fillText("✓", bx, y);
+        ctx.fillStyle = "#f2f2f2";
+        ctx.font = `500 ${b.fontSize}px Manrope, sans-serif`;
+        y = wrapText(ctx, bl, bx + b.fontSize * 1.35, y, CW - bx - b.fontSize * 1.35 - 56, b.fontSize * 1.2);
+        y += b.fontSize * 0.45;
+      });
+    }
+
+    // Precio
+    if (priceLabel || price) {
+      const b = elementBox.price;
+      const bx = (b.x / 100) * CW;
+      let y = (b.y / 100) * CH + b.fontSize * 0.35;
+      if (priceLabel) {
+        ctx.font = `600 ${Math.round(b.fontSize * 0.36)}px Manrope, sans-serif`;
+        ctx.fillStyle = "rgba(255,255,255,0.75)";
+        ctx.fillText(priceLabel, bx, y);
+        y += b.fontSize * 0.9;
+      }
+      if (price) {
+        ctx.font = `800 ${b.fontSize}px Manrope, sans-serif`;
+        ctx.fillStyle = accent;
+        ctx.fillText(price, bx, y);
+      }
     }
   };
 
@@ -1500,16 +1608,12 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
       return;
     }
     try {
-      if (layoutStyle === "titular") {
-        renderTitularCanvas(canvas, video);
-      } else {
-        renderCanvas(canvas, video);
-      }
+      renderPlaca(canvas, video);
     } catch (err) {
       // no interrumpir el loop por un frame fallido
     }
     rafRef.current = requestAnimationFrame(drawFrame);
-  }, [badge, title, bullets, priceLabel, price, accent, layoutStyle, bgMode, titleScale, scrimOpacity, canvasFormat]);
+  }, [badge, title, bullets, priceLabel, price, accent, bgMode, scrimOpacity, canvasFormat, elementBox, logo, logoImageUrl]);
 
   useEffect(() => {
     if (videoUrl || bgMode === "solid") {
@@ -1769,26 +1873,30 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
   const imageEditorProps = {
     canvasFormat, setCanvasFormat, FORMATS,
     imageMode, setImageMode,
-    layoutStyle, setLayoutStyle, titleScale, setTitleScale, scrimOpacity, setScrimOpacity,
+    layoutStyle, applyLayoutPreset, titleScale, setTitleScale, scrimOpacity, setScrimOpacity,
     accent, setAccent, ACCENTS,
-    badge, setBadge, title, setTitle, bullets, updateBullet, removeBullet, addBullet,
+    badge, setBadge, title, setTitle, bullets, setBullets, updateBullet, removeBullet, addBullet,
     priceLabel, setPriceLabel, price, setPrice,
     canvasRef, bgImageUrl, bgImageLoading,
     imageUrl, imageCaptureError, captureImage,
     carouselSlides, carouselGenerating, carouselError, generateCarousel, setCarouselSlides,
+    elementBox, setElementBox, selectedElement, setSelectedElement,
+    logo, setLogo, logoImageUrl, handleLogoUpload,
   };
 
   const videoEditorProps = {
     canvasFormat, setCanvasFormat, FORMATS,
-    layoutStyle, setLayoutStyle, titleScale, setTitleScale, scrimOpacity, setScrimOpacity,
+    layoutStyle, applyLayoutPreset, titleScale, setTitleScale, scrimOpacity, setScrimOpacity,
     accent, setAccent, ACCENTS,
-    badge, setBadge, title, setTitle, bullets, updateBullet, removeBullet, addBullet,
+    badge, setBadge, title, setTitle, bullets, setBullets, updateBullet, removeBullet, addBullet,
     priceLabel, setPriceLabel, price, setPrice,
     videoRef, canvasRef,
     videoUrl, videoError, videoWarning, isPlaying, togglePlay, isRecording, recordProgress,
     videoDuration, clipSeconds, setClipSeconds,
     setVideoError, setVideoWarning, setVideoDuration,
     startRecording, downloadUrl,
+    elementBox, setElementBox, selectedElement, setSelectedElement,
+    logo, setLogo, logoImageUrl, handleLogoUpload,
   };
 
   // =====================================================================
@@ -1837,6 +1945,7 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
                 apiKey={apiKey} setApiKey={setApiKey} showKeyHelp={showKeyHelp} setShowKeyHelp={setShowKeyHelp}
                 photoQuery={photoQuery} setPhotoQuery={setPhotoQuery} photoResults={photoResults}
                 photoSearching={photoSearching} photoSearchError={photoSearchError}
+                photoHasMore={photoHasMore} photoLoadingMore={photoLoadingMore} loadMorePhotos={loadMorePhotos}
                 searchPhotosManually={searchPhotosManually} selectPhoto={selectPhoto} bgImageUrl={bgImageUrl}
                 handleImageUpload={handleImageUpload}
                 ideaTopic={ideaTopic} setIdeaTopic={setIdeaTopic} ideaVariants={ideaVariants} ideaLoading={ideaLoading}
@@ -1846,7 +1955,7 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
                 onLoadExample={(ex) => {
                   applyIdeaToEditor({ badge: ex.badge, title: ex.title, bullets: ex.bullets, priceLabel: ex.priceLabel, price: ex.price, contentType: "promocional" });
                   setAccent(ex.accent);
-                  setLayoutStyle("promo");
+                  applyLayoutPreset("promo");
                   bgImageElRef.current = null;
                   setBgImageUrl("");
                   autoSetBackgroundPhoto(ex.photoQuery);
@@ -1859,6 +1968,7 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
                 editorProps={videoEditorProps}
                 apiKey={apiKey} setApiKey={setApiKey} showKeyHelp={showKeyHelp} setShowKeyHelp={setShowKeyHelp}
                 query={query} setQuery={setQuery} results={results} searching={searching} searchError={searchError}
+                videoHasMore={videoHasMore} videoLoadingMore={videoLoadingMore} loadMoreVideos={loadMoreVideos}
                 doSearch={doSearch} selectVideo={selectVideo} pickBestFile={pickBestFile} videoUrl={videoUrl}
                 handleVideoUpload={handleVideoUpload}
                 ideaTopic={ideaTopic} setIdeaTopic={setIdeaTopic} ideaVariants={ideaVariants} ideaLoading={ideaLoading}
@@ -1868,7 +1978,7 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
                 onLoadExample={(ex) => {
                   applyIdeaToEditor({ badge: ex.badge, title: ex.title, bullets: ex.bullets, priceLabel: ex.priceLabel, price: ex.price, contentType: "promocional" });
                   setAccent(ex.accent);
-                  setLayoutStyle("promo");
+                  applyLayoutPreset("promo");
                   setVideoUrl(ex.video);
                   setVideoDuration(15);
                   setClipSeconds(15);
@@ -2049,14 +2159,14 @@ function FormatPicker({ canvasFormat, setCanvasFormat, FORMATS }) {
 }
 
 // Bloque compartido: configuración de texto
-function TextConfig({ layoutStyle, setLayoutStyle, titleScale, setTitleScale, scrimOpacity, setScrimOpacity, accent, setAccent, ACCENTS, extraOpacityLabel }) {
+function TextConfig({ layoutStyle, applyLayoutPreset, titleScale, setTitleScale, scrimOpacity, setScrimOpacity, accent, setAccent, ACCENTS, extraOpacityLabel }) {
   return (
     <div className="space-y-4">
       <div className="space-y-1">
-        <label className="text-xs md:text-sm text-neutral-400">Formato de placa</label>
+        <label className="text-xs md:text-sm text-neutral-400">Formato de placa (reinicia las posiciones)</label>
         <div className="flex gap-2">
           <button
-            onClick={() => setLayoutStyle("promo")}
+            onClick={() => applyLayoutPreset("promo")}
             className={`flex-1 text-xs md:text-sm font-semibold rounded-lg py-2 transition-colors ${
               layoutStyle === "promo" ? "bg-emerald-500 text-neutral-950" : "bg-neutral-800 text-neutral-400"
             }`}
@@ -2064,7 +2174,7 @@ function TextConfig({ layoutStyle, setLayoutStyle, titleScale, setTitleScale, sc
             Paquete (con precio)
           </button>
           <button
-            onClick={() => setLayoutStyle("titular")}
+            onClick={() => applyLayoutPreset("titular")}
             className={`flex-1 text-xs md:text-sm font-semibold rounded-lg py-2 transition-colors ${
               layoutStyle === "titular" ? "bg-emerald-500 text-neutral-950" : "bg-neutral-800 text-neutral-400"
             }`}
@@ -2072,19 +2182,6 @@ function TextConfig({ layoutStyle, setLayoutStyle, titleScale, setTitleScale, sc
             Titular (afiche)
           </button>
         </div>
-      </div>
-
-      <div className="space-y-1">
-        <label className="text-xs md:text-sm text-neutral-400">Tamaño del título: {Math.round(titleScale * 100)}%</label>
-        <input
-          type="range"
-          min={0.75}
-          max={1.3}
-          step={0.05}
-          value={titleScale}
-          onChange={(e) => setTitleScale(Number(e.target.value))}
-          className="w-full accent-emerald-500"
-        />
       </div>
 
       <div className="space-y-1">
@@ -2121,7 +2218,7 @@ function TextConfig({ layoutStyle, setLayoutStyle, titleScale, setTitleScale, sc
 }
 
 // Bloque compartido: contenido de textos de la placa (badge/título/bullets/precio)
-function ContentEditor({ badge, setBadge, title, setTitle, bullets, updateBullet, removeBullet, addBullet, priceLabel, setPriceLabel, price, setPrice, layoutStyle }) {
+function ContentEditor({ badge, setBadge, title, setTitle, bullets, setBullets, updateBullet, removeBullet, addBullet, priceLabel, setPriceLabel, price, setPrice, layoutStyle }) {
   return (
     <div className="space-y-4">
       <div className="space-y-1">
@@ -2189,10 +2286,7 @@ function ContentEditor({ badge, setBadge, title, setTitle, bullets, updateBullet
 // Bloque compartido: buscador de ideas con IA (inline)
 function InlineIdeaSearch({ ideaTopic, setIdeaTopic, ideaVariants, ideaLoading, ideaError, ideaIsTemplate, generateIdea, onUse, mediaLabel }) {
   return (
-    <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4 space-y-3">
-      <h2 className="text-sm md:text-base font-bold text-neutral-200 flex items-center gap-1.5">
-        <Sparkles size={14} className="text-emerald-400" /> Ideas con IA sobre el tema
-      </h2>
+    <CollapsibleSection title="Ideas con IA sobre el tema" icon={<Sparkles size={14} className="text-emerald-400" />}>
       <p className="text-xs md:text-sm text-neutral-500">
         Contanos brevemente sobre qué es {mediaLabel} (evento, destino, fecha) y te generamos 4 ideas de contenido
         listas para usar.
@@ -2222,7 +2316,7 @@ function InlineIdeaSearch({ ideaTopic, setIdeaTopic, ideaVariants, ideaLoading, 
           ))}
         </div>
       )}
-    </section>
+    </CollapsibleSection>
   );
 }
 
@@ -2254,20 +2348,308 @@ function ExamplesCollapsible({ EXAMPLES, onLoadExample }) {
   );
 }
 
+// Bloque genérico: sección desplegable reutilizable (Ideas con IA,
+// Cargar imagen/video, etc.)
+function CollapsibleSection({ title, icon, children, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between px-4 py-3.5">
+        <span className="text-sm md:text-base font-bold text-neutral-200 flex items-center gap-1.5">
+          {icon}
+          {title}
+        </span>
+        <span className="text-neutral-500 text-xs md:text-sm">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && <div className="px-4 pb-4 space-y-3">{children}</div>}
+    </section>
+  );
+}
+
 // =====================================================================
-// BLOQUE DE EDITOR — IMAGEN (reutilizado en Generador de Placas e
-// incrustado dentro de Ideas / Calendario)
+// OVERLAY INTERACTIVO SOBRE EL LIENZO — permite hacer clic en cada
+// elemento para editarlo ahí mismo, arrastrarlo (ícono ⠿) y cambiar su
+// tamaño (tirando del punto verde). Comparte el mismo estado que el
+// canvas real, así lo que ves acá es lo que se exporta.
 // =====================================================================
+function CanvasOverlay({
+  elementBox, setElementBox, selectedElement, setSelectedElement,
+  logo, setLogo, logoImageUrl,
+  badge, setBadge, title, setTitle, bullets, setBullets, priceLabel, setPriceLabel, price, setPrice,
+  accent, CW, CH,
+}) {
+  const containerRef = useRef(null);
+  const [scale, setScale] = useState(0.3);
+  const dragRef = useRef(null);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => setScale(el.offsetWidth / CW);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [CW]);
+
+  const onPointerMove = (e) => {
+    const d = dragRef.current;
+    if (!d) return;
+    if (d.mode === "move") {
+      const dxPct = ((e.clientX - d.startX) / d.rectW) * 100;
+      const dyPct = ((e.clientY - d.startY) / d.rectH) * 100;
+      setElementBox((prev) => ({
+        ...prev,
+        [d.key]: { ...prev[d.key], x: Math.max(0, Math.min(90, d.origX + dxPct)), y: Math.max(0, Math.min(95, d.origY + dyPct)) },
+      }));
+    } else {
+      const delta = e.clientY - d.startY;
+      setElementBox((prev) => ({
+        ...prev,
+        [d.key]: { ...prev[d.key], fontSize: Math.max(16, Math.min(160, d.origSize - delta * 0.4)) },
+      }));
+    }
+  };
+  const onPointerUp = () => {
+    dragRef.current = null;
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+  };
+  const onPointerDownDrag = (key, e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setSelectedElement(key);
+    const rect = containerRef.current.getBoundingClientRect();
+    dragRef.current = { key, mode: "move", startX: e.clientX, startY: e.clientY, origX: elementBox[key].x, origY: elementBox[key].y, rectW: rect.width, rectH: rect.height };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  };
+  const onPointerDownResize = (key, e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setSelectedElement(key);
+    dragRef.current = { key, mode: "resize", startX: e.clientX, startY: e.clientY, origSize: elementBox[key].fontSize };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  };
+
+  const boxStyle = (key) => {
+    const b = elementBox[key];
+    return { position: "absolute", left: `${b.x}%`, top: `${b.y}%`, fontSize: `${b.fontSize * scale}px`, maxWidth: `${96 - b.x}%` };
+  };
+  const wrapClass = (key) =>
+    `group ${
+      selectedElement === key ? "outline outline-2 outline-emerald-400" : "outline outline-1 outline-dashed outline-transparent hover:outline-white/40"
+    } outline-offset-2 rounded px-1`;
+  const handle = (key) => (
+    <span
+      onPointerDown={(e) => onPointerDownDrag(key, e)}
+      className="cursor-move opacity-0 group-hover:opacity-80 text-white text-[10px] select-none shrink-0 mt-0.5"
+      title="Arrastrar"
+    >
+      ⠿
+    </span>
+  );
+  const resizeHandle = (key) =>
+    selectedElement === key && (
+      <span
+        onPointerDown={(e) => onPointerDownResize(key, e)}
+        className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-emerald-400 rounded-full cursor-nwse-resize border border-neutral-900"
+        title="Arrastrar para cambiar tamaño"
+      />
+    );
+
+  const showLogo = logo.mode !== "none";
+  const showBadge = !!badge;
+  const showTitle = !!title;
+  const showBullets = bullets.some((b) => b.trim());
+  const showPrice = !!(priceLabel || price);
+
+  return (
+    <div ref={containerRef} className="absolute inset-0" onPointerDown={() => setSelectedElement(null)} style={{ fontFamily: "Manrope, sans-serif" }}>
+      {showLogo && (
+        <div style={boxStyle("logo")} className={wrapClass("logo")} onPointerDown={(e) => e.stopPropagation()}>
+          <div className="flex items-start gap-1">
+            {handle("logo")}
+            {logo.mode === "text" ? (
+              <div
+                contentEditable
+                suppressContentEditableWarning
+                onFocus={() => setSelectedElement("logo")}
+                onBlur={(e) => setLogo((prev) => ({ ...prev, text: e.currentTarget.innerText }))}
+                className="text-white/90 font-bold outline-none whitespace-nowrap"
+              >
+                {logo.text}
+              </div>
+            ) : (
+              logoImageUrl && (
+                <img src={logoImageUrl} alt="logo" style={{ height: `${elementBox.logo.fontSize * 1.8 * scale}px` }} className="object-contain" />
+              )
+            )}
+          </div>
+          {resizeHandle("logo")}
+        </div>
+      )}
+
+      {showBadge && (
+        <div style={boxStyle("badge")} className={wrapClass("badge")} onPointerDown={(e) => e.stopPropagation()}>
+          <div className="flex items-start gap-1">
+            {handle("badge")}
+            <div
+              contentEditable
+              suppressContentEditableWarning
+              onFocus={() => setSelectedElement("badge")}
+              onBlur={(e) => setBadge(e.currentTarget.innerText)}
+              className="font-extrabold uppercase outline-none whitespace-nowrap px-3 py-1 rounded-full"
+              style={{ backgroundColor: accent, color: "#0b0b0b" }}
+            >
+              {badge}
+            </div>
+          </div>
+          {resizeHandle("badge")}
+        </div>
+      )}
+
+      {showTitle && (
+        <div style={boxStyle("title")} className={wrapClass("title")} onPointerDown={(e) => e.stopPropagation()}>
+          <div className="flex items-start gap-1">
+            {handle("title")}
+            <div
+              contentEditable
+              suppressContentEditableWarning
+              onFocus={() => setSelectedElement("title")}
+              onBlur={(e) => setTitle(e.currentTarget.innerText)}
+              className="font-extrabold text-white outline-none whitespace-pre-wrap leading-tight"
+            >
+              {title}
+            </div>
+          </div>
+          {resizeHandle("title")}
+        </div>
+      )}
+
+      {showBullets && (
+        <div style={boxStyle("bullets")} className={wrapClass("bullets")} onPointerDown={(e) => e.stopPropagation()}>
+          <div className="flex items-start gap-1">
+            {handle("bullets")}
+            <div
+              contentEditable
+              suppressContentEditableWarning
+              onFocus={() => setSelectedElement("bullets")}
+              onBlur={(e) =>
+                setBullets(
+                  e.currentTarget.innerText
+                    .split("\n")
+                    .map((l) => l.replace(/^✓\s*/, ""))
+                    .filter((l) => l.trim())
+                )
+              }
+              className="text-neutral-100 outline-none whitespace-pre-wrap leading-snug"
+            >
+              {bullets
+                .filter((b) => b.trim())
+                .map((b) => `✓ ${b}`)
+                .join("\n")}
+            </div>
+          </div>
+          {resizeHandle("bullets")}
+        </div>
+      )}
+
+      {showPrice && (
+        <div style={boxStyle("price")} className={wrapClass("price")} onPointerDown={(e) => e.stopPropagation()}>
+          <div className="flex items-start gap-1">
+            {handle("price")}
+            <div
+              contentEditable
+              suppressContentEditableWarning
+              onFocus={() => setSelectedElement("price")}
+              onBlur={(e) => {
+                const lines = e.currentTarget.innerText.split("\n");
+                setPriceLabel(lines[0] || "");
+                setPrice(lines[1] || "");
+              }}
+              className="outline-none whitespace-pre-wrap leading-tight font-bold"
+              style={{ color: accent }}
+            >
+              {[priceLabel, price].filter(Boolean).join("\n")}
+            </div>
+          </div>
+          {resizeHandle("price")}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Bloque compartido: configuración del logo (texto / imagen / sin logo)
+function LogoConfig({ logo, setLogo, logoImageUrl, handleLogoUpload }) {
+  return (
+    <div className="space-y-3">
+      <label className="text-xs md:text-sm text-neutral-400">Logo</label>
+      <div className="flex gap-2">
+        <button
+          onClick={() => setLogo((prev) => ({ ...prev, mode: "text" }))}
+          className={`flex-1 text-xs md:text-sm font-semibold rounded-lg py-2 transition-colors ${
+            logo.mode === "text" ? "bg-emerald-500 text-neutral-950" : "bg-neutral-800 text-neutral-400"
+          }`}
+        >
+          Texto
+        </button>
+        <button
+          onClick={() => setLogo((prev) => ({ ...prev, mode: "image" }))}
+          className={`flex-1 text-xs md:text-sm font-semibold rounded-lg py-2 transition-colors ${
+            logo.mode === "image" ? "bg-emerald-500 text-neutral-950" : "bg-neutral-800 text-neutral-400"
+          }`}
+        >
+          Imagen
+        </button>
+        <button
+          onClick={() => setLogo((prev) => ({ ...prev, mode: "none" }))}
+          className={`flex-1 text-xs md:text-sm font-semibold rounded-lg py-2 transition-colors ${
+            logo.mode === "none" ? "bg-emerald-500 text-neutral-950" : "bg-neutral-800 text-neutral-400"
+          }`}
+        >
+          Sin logo
+        </button>
+      </div>
+      {logo.mode === "text" && (
+        <input
+          value={logo.text}
+          onChange={(e) => setLogo((prev) => ({ ...prev, text: e.target.value }))}
+          placeholder="Texto del logo"
+          className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-sm"
+        />
+      )}
+      {logo.mode === "image" && (
+        <div className="space-y-2">
+          <label className="flex items-center justify-center gap-2 border border-dashed border-neutral-700 rounded-xl py-2.5 text-xs md:text-sm text-neutral-300 cursor-pointer hover:border-neutral-500 transition-colors">
+            <Upload size={14} /> {logoImageUrl ? "Cambiar imagen del logo" : "Subir imagen del logo"}
+            <input type="file" accept="image/*" onChange={handleLogoUpload} className="hidden" />
+          </label>
+          {logoImageUrl && <img src={logoImageUrl} alt="logo" className="h-10 object-contain" />}
+        </div>
+      )}
+      <p className="text-[11px] md:text-sm text-neutral-500">
+        También podés arrastrar y editar el logo directo desde la vista previa.
+      </p>
+    </div>
+  );
+}
+
+
 function ImageEditorBlock({
   canvasFormat, setCanvasFormat, FORMATS,
   imageMode, setImageMode,
-  layoutStyle, setLayoutStyle, titleScale, setTitleScale, scrimOpacity, setScrimOpacity,
+  layoutStyle, applyLayoutPreset, titleScale, setTitleScale, scrimOpacity, setScrimOpacity,
   accent, setAccent, ACCENTS,
-  badge, setBadge, title, setTitle, bullets, updateBullet, removeBullet, addBullet,
+  badge, setBadge, title, setTitle, bullets, setBullets, updateBullet, removeBullet, addBullet,
   priceLabel, setPriceLabel, price, setPrice,
   canvasRef, bgImageUrl, bgImageLoading,
   imageUrl, imageCaptureError, captureImage,
   carouselSlides, carouselGenerating, carouselError, generateCarousel, setCarouselSlides,
+  elementBox, setElementBox, selectedElement, setSelectedElement,
+  logo, setLogo, logoImageUrl, handleLogoUpload,
   onClose,
 }) {
   const [configOpen, setConfigOpen] = useState(false);
@@ -2284,32 +2666,44 @@ function ImageEditorBlock({
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-3 items-start">
-        <div
-          className="relative rounded-2xl overflow-hidden border border-neutral-800 bg-black"
-          style={{ aspectRatio: `${w}/${h}` }}
-        >
-          <canvas ref={canvasRef} width={w} height={h} className="w-full h-full" />
-          {bgImageLoading && (
-            <div className="absolute top-2 left-2 bg-neutral-950/80 text-neutral-300 text-[9px] md:text-[11px] rounded-full px-2 py-0.5 flex items-center gap-1">
-              <Loader2 size={9} className="animate-spin" /> Buscando foto…
-            </div>
-          )}
-          {!bgImageLoading && !bgImageUrl && (
-            <div className="absolute top-2 left-2 bg-neutral-950/80 text-neutral-300 text-[9px] md:text-[11px] rounded-full px-2 py-0.5">
-              Color · sin foto
-            </div>
-          )}
-        </div>
-
-        <button
-          onClick={() => setConfigOpen(!configOpen)}
-          className="h-full min-h-[80px] bg-neutral-900 border border-neutral-800 rounded-2xl p-3 flex flex-col items-center justify-center gap-1 text-xs md:text-sm font-semibold text-neutral-200"
-        >
-          <span>⚙️ Configuración</span>
-          <span className="text-neutral-500 text-[10px] md:text-xs">{configOpen ? "Ocultar ▲" : "Mostrar ▼"}</span>
-        </button>
+      <div
+        className="relative rounded-2xl overflow-hidden border border-neutral-800 bg-black mx-auto w-full"
+        style={{ aspectRatio: `${w}/${h}`, maxWidth: w > h ? "100%" : 420 }}
+      >
+        <canvas ref={canvasRef} width={w} height={h} className="w-full h-full" />
+        <CanvasOverlay
+          elementBox={elementBox} setElementBox={setElementBox}
+          selectedElement={selectedElement} setSelectedElement={setSelectedElement}
+          logo={logo} setLogo={setLogo} logoImageUrl={logoImageUrl}
+          badge={badge} setBadge={setBadge} title={title} setTitle={setTitle}
+          bullets={bullets} setBullets={setBullets}
+          priceLabel={priceLabel} setPriceLabel={setPriceLabel} price={price} setPrice={setPrice}
+          accent={accent} CW={w} CH={h}
+        />
+        {bgImageLoading && (
+          <div className="absolute top-2 left-2 bg-neutral-950/80 text-neutral-300 text-[9px] md:text-[11px] rounded-full px-2 py-0.5 flex items-center gap-1 pointer-events-none">
+            <Loader2 size={9} className="animate-spin" /> Buscando foto…
+          </div>
+        )}
+        {!bgImageLoading && !bgImageUrl && (
+          <div className="absolute top-2 left-2 bg-neutral-950/80 text-neutral-300 text-[9px] md:text-[11px] rounded-full px-2 py-0.5 pointer-events-none">
+            Color · sin foto
+          </div>
+        )}
       </div>
+
+      <p className="text-[11px] md:text-sm text-neutral-500 text-center leading-snug">
+        💡 Tocá cualquier texto para editarlo ahí mismo, arrastralo con el ⠿, o cambiá su tamaño desde el punto
+        verde.
+      </p>
+
+      <button
+        onClick={() => setConfigOpen(!configOpen)}
+        className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl p-3.5 flex items-center justify-between text-sm md:text-base font-semibold text-neutral-200"
+      >
+        <span>⚙️ Configuración</span>
+        <span className="text-neutral-500 text-xs md:text-sm">{configOpen ? "Ocultar ▲" : "Mostrar ▼"}</span>
+      </button>
 
       {configOpen && (
         <div className="space-y-4">
@@ -2340,9 +2734,14 @@ function ImageEditorBlock({
           </section>
 
           <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4">
+            <h3 className="text-sm md:text-base font-bold text-neutral-200 mb-3">Logo</h3>
+            <LogoConfig logo={logo} setLogo={setLogo} logoImageUrl={logoImageUrl} handleLogoUpload={handleLogoUpload} />
+          </section>
+
+          <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4">
             <h3 className="text-sm md:text-base font-bold text-neutral-200 mb-3">Configuración de texto</h3>
             <TextConfig
-              layoutStyle={layoutStyle} setLayoutStyle={setLayoutStyle}
+              layoutStyle={layoutStyle} applyLayoutPreset={applyLayoutPreset}
               titleScale={titleScale} setTitleScale={setTitleScale}
               scrimOpacity={scrimOpacity} setScrimOpacity={setScrimOpacity}
               accent={accent} setAccent={setAccent} ACCENTS={ACCENTS}
@@ -2351,9 +2750,9 @@ function ImageEditorBlock({
           </section>
 
           <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4">
-            <h3 className="text-sm md:text-base font-bold text-neutral-200 mb-3">Textos de la placa</h3>
+            <h3 className="text-sm md:text-base font-bold text-neutral-200 mb-3">Textos de la placa (alternativa al clic directo)</h3>
             <ContentEditor
-              {...{ badge, setBadge, title, setTitle, bullets, updateBullet, removeBullet, addBullet, priceLabel, setPriceLabel, price, setPrice, layoutStyle }}
+              {...{ badge, setBadge, title, setTitle, bullets, setBullets, updateBullet, removeBullet, addBullet, priceLabel, setPriceLabel, price, setPrice, layoutStyle }}
             />
           </section>
         </div>
@@ -2436,15 +2835,17 @@ function ImageEditorBlock({
 // =====================================================================
 function VideoEditorBlock({
   canvasFormat, setCanvasFormat, FORMATS,
-  layoutStyle, setLayoutStyle, titleScale, setTitleScale, scrimOpacity, setScrimOpacity,
+  layoutStyle, applyLayoutPreset, titleScale, setTitleScale, scrimOpacity, setScrimOpacity,
   accent, setAccent, ACCENTS,
-  badge, setBadge, title, setTitle, bullets, updateBullet, removeBullet, addBullet,
+  badge, setBadge, title, setTitle, bullets, setBullets, updateBullet, removeBullet, addBullet,
   priceLabel, setPriceLabel, price, setPrice,
   videoRef, canvasRef,
   videoUrl, videoError, videoWarning, isPlaying, togglePlay, isRecording, recordProgress,
   videoDuration, clipSeconds, setClipSeconds,
   setVideoError, setVideoWarning, setVideoDuration,
   startRecording, downloadUrl,
+  elementBox, setElementBox, selectedElement, setSelectedElement,
+  logo, setLogo, logoImageUrl, handleLogoUpload,
   onClose,
 }) {
   const [configOpen, setConfigOpen] = useState(false);
@@ -2461,82 +2862,94 @@ function VideoEditorBlock({
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-3 items-start">
-        <div className="relative rounded-2xl overflow-hidden border border-neutral-800 bg-black" style={{ aspectRatio: `${w}/${h}` }}>
-          {videoUrl && (
-            <video
-              key={videoUrl}
-              ref={videoRef}
-              src={videoUrl}
-              loop
-              playsInline
-              muted
-              autoPlay
-              style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }}
-              crossOrigin={videoUrl.startsWith("blob:") ? undefined : "anonymous"}
-              onLoadedData={() => {
-                setVideoError("");
-                setVideoWarning("");
-              }}
-              onError={(e) => {
-                const mediaError = e.target.error;
-                const isLocalFile = videoUrl.startsWith("blob:");
-                let msg = "No se pudo cargar este video. Probá con otro ejemplo o subí el tuyo.";
-                if (mediaError) {
-                  if (mediaError.code === 3 || mediaError.code === 4) {
-                    msg = isLocalFile
-                      ? "Este formato/códec de video no lo puede reproducir el navegador (frecuente en .MOV de iPhone en HEVC). Convertilo a .mp4, o Ajustes > Cámara > Formato > \"Más compatible\"."
-                      : "Este video de fondo no se pudo cargar. Probá con otro ejemplo, buscá otro, o subí el tuyo.";
-                  } else if (mediaError.code === 2) {
-                    msg = "Hubo un problema de conexión al cargar el video. Probá de nuevo.";
-                  }
+      <div className="relative rounded-2xl overflow-hidden border border-neutral-800 bg-black mx-auto w-full" style={{ aspectRatio: `${w}/${h}`, maxWidth: w > h ? "100%" : 420 }}>
+        {videoUrl && (
+          <video
+            key={videoUrl}
+            ref={videoRef}
+            src={videoUrl}
+            loop
+            playsInline
+            muted
+            autoPlay
+            style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }}
+            crossOrigin={videoUrl.startsWith("blob:") ? undefined : "anonymous"}
+            onLoadedData={() => {
+              setVideoError("");
+              setVideoWarning("");
+            }}
+            onError={(e) => {
+              const mediaError = e.target.error;
+              const isLocalFile = videoUrl.startsWith("blob:");
+              let msg = "No se pudo cargar este video. Probá con otro ejemplo o subí el tuyo.";
+              if (mediaError) {
+                if (mediaError.code === 3 || mediaError.code === 4) {
+                  msg = isLocalFile
+                    ? "Este formato/códec de video no lo puede reproducir el navegador (frecuente en .MOV de iPhone en HEVC). Convertilo a .mp4, o Ajustes > Cámara > Formato > \"Más compatible\"."
+                    : "Este video de fondo no se pudo cargar. Probá con otro ejemplo, buscá otro, o subí el tuyo.";
+                } else if (mediaError.code === 2) {
+                  msg = "Hubo un problema de conexión al cargar el video. Probá de nuevo.";
                 }
-                setVideoError(msg);
-              }}
-              onLoadedMetadata={(e) => {
-                const d = e.target.duration;
-                if (d && isFinite(d)) {
-                  setVideoDuration(d);
-                  setClipSeconds(Math.min(60, Math.max(5, Math.round(d))));
-                }
-              }}
-            />
-          )}
-          <canvas ref={canvasRef} width={w} height={h} className="w-full h-full" />
+              }
+              setVideoError(msg);
+            }}
+            onLoadedMetadata={(e) => {
+              const d = e.target.duration;
+              if (d && isFinite(d)) {
+                setVideoDuration(d);
+                setClipSeconds(Math.min(60, Math.max(5, Math.round(d))));
+              }
+            }}
+          />
+        )}
+        <canvas ref={canvasRef} width={w} height={h} className="w-full h-full" />
+        <CanvasOverlay
+          elementBox={elementBox} setElementBox={setElementBox}
+          selectedElement={selectedElement} setSelectedElement={setSelectedElement}
+          logo={logo} setLogo={setLogo} logoImageUrl={logoImageUrl}
+          badge={badge} setBadge={setBadge} title={title} setTitle={setTitle}
+          bullets={bullets} setBullets={setBullets}
+          priceLabel={priceLabel} setPriceLabel={setPriceLabel} price={price} setPrice={setPrice}
+          accent={accent} CW={w} CH={h}
+        />
 
-          {videoWarning && !videoError && (
-            <div className="absolute top-2 left-2 right-2 bg-amber-500/95 text-neutral-950 text-[9px] md:text-[11px] rounded-lg px-2 py-1 leading-snug">
-              {videoWarning}
+        {videoWarning && !videoError && (
+          <div className="absolute top-2 left-2 right-2 bg-amber-500/95 text-neutral-950 text-[9px] md:text-[11px] rounded-lg px-2 py-1 leading-snug pointer-events-none">
+            {videoWarning}
+          </div>
+        )}
+        {videoError && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/85 p-3 text-center pointer-events-none">
+            <p className="text-[10px] md:text-xs text-neutral-300">{videoError}</p>
+          </div>
+        )}
+        {isRecording && (
+          <div className="absolute top-2 left-2 right-2 flex items-center gap-1.5 bg-black/70 rounded-full px-2 py-1 pointer-events-none">
+            <Circle size={8} className="text-rose-500 fill-rose-500 animate-pulse" />
+            <div className="flex-1 h-1 bg-neutral-700 rounded-full overflow-hidden">
+              <div className="h-full bg-rose-500" style={{ width: `${recordProgress}%` }} />
             </div>
-          )}
-          {videoError && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/85 p-3 text-center">
-              <p className="text-[10px] md:text-xs text-neutral-300">{videoError}</p>
-            </div>
-          )}
-          {isRecording && (
-            <div className="absolute top-2 left-2 right-2 flex items-center gap-1.5 bg-black/70 rounded-full px-2 py-1">
-              <Circle size={8} className="text-rose-500 fill-rose-500 animate-pulse" />
-              <div className="flex-1 h-1 bg-neutral-700 rounded-full overflow-hidden">
-                <div className="h-full bg-rose-500" style={{ width: `${recordProgress}%` }} />
-              </div>
-            </div>
-          )}
-          {videoUrl && (
-            <button onClick={togglePlay} className="absolute bottom-2 right-2 w-8 h-8 rounded-full bg-black/60 flex items-center justify-center">
-              {isPlaying ? <Pause size={14} /> : <Play size={14} className="ml-0.5" />}
-            </button>
-          )}
-        </div>
-
-        <button
-          onClick={() => setConfigOpen(!configOpen)}
-          className="h-full min-h-[80px] bg-neutral-900 border border-neutral-800 rounded-2xl p-3 flex flex-col items-center justify-center gap-1 text-xs md:text-sm font-semibold text-neutral-200"
-        >
-          <span>⚙️ Configuración</span>
-          <span className="text-neutral-500 text-[10px] md:text-xs">{configOpen ? "Ocultar ▲" : "Mostrar ▼"}</span>
-        </button>
+          </div>
+        )}
+        {videoUrl && (
+          <button onClick={togglePlay} className="absolute bottom-2 right-2 w-8 h-8 rounded-full bg-black/60 flex items-center justify-center z-10">
+            {isPlaying ? <Pause size={14} /> : <Play size={14} className="ml-0.5" />}
+          </button>
+        )}
       </div>
+
+      <p className="text-[11px] md:text-sm text-neutral-500 text-center leading-snug">
+        💡 Tocá cualquier texto para editarlo ahí mismo, arrastralo con el ⠿, o cambiá su tamaño desde el punto
+        verde.
+      </p>
+
+      <button
+        onClick={() => setConfigOpen(!configOpen)}
+        className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl p-3.5 flex items-center justify-between text-sm md:text-base font-semibold text-neutral-200"
+      >
+        <span>⚙️ Configuración</span>
+        <span className="text-neutral-500 text-xs md:text-sm">{configOpen ? "Ocultar ▲" : "Mostrar ▼"}</span>
+      </button>
 
       {configOpen && (
         <div className="space-y-4">
@@ -2557,9 +2970,14 @@ function VideoEditorBlock({
           </section>
 
           <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4">
+            <h3 className="text-sm md:text-base font-bold text-neutral-200 mb-3">Logo</h3>
+            <LogoConfig logo={logo} setLogo={setLogo} logoImageUrl={logoImageUrl} handleLogoUpload={handleLogoUpload} />
+          </section>
+
+          <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4">
             <h3 className="text-sm md:text-base font-bold text-neutral-200 mb-3">Configuración de texto</h3>
             <TextConfig
-              layoutStyle={layoutStyle} setLayoutStyle={setLayoutStyle}
+              layoutStyle={layoutStyle} applyLayoutPreset={applyLayoutPreset}
               titleScale={titleScale} setTitleScale={setTitleScale}
               scrimOpacity={scrimOpacity} setScrimOpacity={setScrimOpacity}
               accent={accent} setAccent={setAccent} ACCENTS={ACCENTS}
@@ -2568,9 +2986,9 @@ function VideoEditorBlock({
           </section>
 
           <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4">
-            <h3 className="text-sm md:text-base font-bold text-neutral-200 mb-3">Textos de la placa</h3>
+            <h3 className="text-sm md:text-base font-bold text-neutral-200 mb-3">Textos de la placa (alternativa al clic directo)</h3>
             <ContentEditor
-              {...{ badge, setBadge, title, setTitle, bullets, updateBullet, removeBullet, addBullet, priceLabel, setPriceLabel, price, setPrice, layoutStyle }}
+              {...{ badge, setBadge, title, setTitle, bullets, setBullets, updateBullet, removeBullet, addBullet, priceLabel, setPriceLabel, price, setPrice, layoutStyle }}
             />
           </section>
         </div>
@@ -2628,6 +3046,7 @@ function ChatComingSoon() {
 function CrearImagenScreen({
   editorProps, apiKey, setApiKey, showKeyHelp, setShowKeyHelp,
   photoQuery, setPhotoQuery, photoResults, photoSearching, photoSearchError, searchPhotosManually, selectPhoto, bgImageUrl,
+  photoHasMore, photoLoadingMore, loadMorePhotos,
   handleImageUpload,
   ideaTopic, setIdeaTopic, ideaVariants, ideaLoading, ideaError, ideaIsTemplate, generateIdea,
   applyIdeaToEditor, autoSetBackgroundPhoto,
@@ -2650,8 +3069,7 @@ function CrearImagenScreen({
         }}
       />
 
-      <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4 space-y-3">
-        <h2 className="text-sm md:text-base font-bold text-neutral-200">Cargar imagen</h2>
+      <CollapsibleSection title="Cargar imagen" icon={<ImageIcon size={14} className="text-emerald-400" />}>
         <div className="flex gap-2">
           <button
             onClick={() => setLoadTab("galeria")}
@@ -2689,6 +3107,7 @@ function CrearImagenScreen({
             {showKeyHelp && (
               <p className="text-[11px] md:text-sm text-neutral-400 leading-relaxed">
                 Entrá a pexels.com/api, creá una cuenta gratis y copiá la key al instante. Sirve para fotos y videos.
+                Se guarda sola para la próxima vez.
               </p>
             )}
             <input
@@ -2712,23 +3131,34 @@ function CrearImagenScreen({
             </div>
             {photoSearchError && <p className="text-[11px] md:text-sm text-rose-400">{photoSearchError}</p>}
             {photoResults.length > 0 && (
-              <div className="grid grid-cols-4 gap-1.5">
-                {photoResults.map((p) => (
+              <>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {photoResults.map((p, i) => (
+                    <button
+                      key={`${p.id}-${i}`}
+                      onClick={() => selectPhoto(p)}
+                      className={`aspect-[9/16] rounded-md overflow-hidden border-2 ${
+                        bgImageUrl === (p.src.large2x || p.src.large || p.src.original) ? "border-emerald-400" : "border-transparent"
+                      }`}
+                    >
+                      <img src={p.src.tiny} alt="" className="w-full h-full object-cover" />
+                    </button>
+                  ))}
+                </div>
+                {photoHasMore && (
                   <button
-                    key={p.id}
-                    onClick={() => selectPhoto(p)}
-                    className={`aspect-[9/16] rounded-md overflow-hidden border-2 ${
-                      bgImageUrl === (p.src.large2x || p.src.large || p.src.original) ? "border-emerald-400" : "border-transparent"
-                    }`}
+                    onClick={loadMorePhotos}
+                    disabled={photoLoadingMore}
+                    className="w-full bg-neutral-800 border border-neutral-700 rounded-lg py-2 text-xs md:text-sm font-semibold flex items-center justify-center gap-1.5 disabled:opacity-60"
                   >
-                    <img src={p.src.tiny} alt="" className="w-full h-full object-cover" />
+                    {photoLoadingMore ? <Loader2 size={14} className="animate-spin" /> : null} Ver más
                   </button>
-                ))}
-              </div>
+                )}
+              </>
             )}
           </div>
         )}
-      </section>
+      </CollapsibleSection>
 
       <ImageEditorBlock {...editorProps} />
     </div>
@@ -2741,6 +3171,7 @@ function CrearImagenScreen({
 function CrearVideoScreen({
   editorProps, apiKey, setApiKey, showKeyHelp, setShowKeyHelp,
   query, setQuery, results, searching, searchError, doSearch, selectVideo, pickBestFile, videoUrl,
+  videoHasMore, videoLoadingMore, loadMoreVideos,
   handleVideoUpload,
   ideaTopic, setIdeaTopic, ideaVariants, ideaLoading, ideaError, ideaIsTemplate, generateIdea, applyIdeaToEditor,
   EXAMPLES, onLoadExample,
@@ -2758,8 +3189,7 @@ function CrearVideoScreen({
         onUse={(idea) => applyIdeaToEditor(idea)}
       />
 
-      <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4 space-y-3">
-        <h2 className="text-sm md:text-base font-bold text-neutral-200">Cargar video</h2>
+      <CollapsibleSection title="Cargar video" icon={<Film size={14} className="text-emerald-400" />}>
         <div className="flex gap-2">
           <button
             onClick={() => setLoadTab("galeria")}
@@ -2797,6 +3227,7 @@ function CrearVideoScreen({
             {showKeyHelp && (
               <p className="text-[11px] md:text-sm text-neutral-400 leading-relaxed">
                 Entrá a pexels.com/api, creá una cuenta gratis y copiá la key al instante. Sirve para fotos y videos.
+                Se guarda sola para la próxima vez.
               </p>
             )}
             <input
@@ -2820,37 +3251,48 @@ function CrearVideoScreen({
             </div>
             {searchError && <p className="text-xs md:text-sm text-rose-400">{searchError}</p>}
             {results.length > 0 && (
-              <div className="grid grid-cols-3 gap-2">
-                {results.map((v) => (
+              <>
+                <div className="grid grid-cols-3 gap-2">
+                  {results.map((v, i) => (
+                    <button
+                      key={`${v.id}-${i}`}
+                      onClick={() => selectVideo(v)}
+                      className={`relative aspect-[9/16] rounded-lg overflow-hidden border-2 ${
+                        videoUrl === pickBestFile(v) ? "border-emerald-400" : "border-transparent"
+                      }`}
+                    >
+                      <video
+                        src={pickBestFile(v)}
+                        poster={v.image}
+                        muted
+                        loop
+                        playsInline
+                        preload="none"
+                        className="w-full h-full object-cover"
+                        onMouseEnter={(e) => e.currentTarget.play().catch(() => {})}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.pause();
+                          e.currentTarget.currentTime = 0;
+                        }}
+                      />
+                      <span className="absolute bottom-1 right-1 text-[10px] md:text-xs bg-black/70 px-1 rounded">{Math.round(v.duration)}s</span>
+                    </button>
+                  ))}
+                </div>
+                {videoHasMore && (
                   <button
-                    key={v.id}
-                    onClick={() => selectVideo(v)}
-                    className={`relative aspect-[9/16] rounded-lg overflow-hidden border-2 ${
-                      videoUrl === pickBestFile(v) ? "border-emerald-400" : "border-transparent"
-                    }`}
+                    onClick={loadMoreVideos}
+                    disabled={videoLoadingMore}
+                    className="w-full bg-neutral-800 border border-neutral-700 rounded-lg py-2 text-xs md:text-sm font-semibold flex items-center justify-center gap-1.5 disabled:opacity-60"
                   >
-                    <video
-                      src={pickBestFile(v)}
-                      poster={v.image}
-                      muted
-                      loop
-                      playsInline
-                      preload="none"
-                      className="w-full h-full object-cover"
-                      onMouseEnter={(e) => e.currentTarget.play().catch(() => {})}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.pause();
-                        e.currentTarget.currentTime = 0;
-                      }}
-                    />
-                    <span className="absolute bottom-1 right-1 text-[10px] md:text-xs bg-black/70 px-1 rounded">{Math.round(v.duration)}s</span>
+                    {videoLoadingMore ? <Loader2 size={14} className="animate-spin" /> : null} Ver más
                   </button>
-                ))}
-              </div>
+                )}
+              </>
             )}
           </div>
         )}
-      </section>
+      </CollapsibleSection>
 
       <VideoEditorBlock {...editorProps} />
     </div>
