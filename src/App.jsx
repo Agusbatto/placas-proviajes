@@ -890,6 +890,10 @@ export default function PlacasApp() {
   const [carouselSlides, setCarouselSlides] = useState(null);
   const [carouselGenerating, setCarouselGenerating] = useState(false);
   const [carouselError, setCarouselError] = useState("");
+  const [carouselSlideData, setCarouselSlideData] = useState(null); // contenido editable por slide
+  const [carouselSlideCount, setCarouselSlideCount] = useState(5);
+  const [carouselAccent, setCarouselAccent] = useState(ACCENTS[0].value);
+  const carouselBgImgRef = useRef(null);
 
   // ---- Generador de ideas ----
   const [ideaTopic, setIdeaTopic] = useState("");
@@ -1497,7 +1501,7 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
   // Renderizador único: dibuja fondo (video/foto/color), el logo (texto,
   // imagen o nada), y cada elemento en la posición/tamaño que tenga
   // guardado en elementBox (editable arrastrando en la vista previa).
-  const renderPlaca = (canvas, video) => {
+  const renderBackground = (canvas, video) => {
     const ctx = canvas.getContext("2d");
     ctx.textBaseline = "alphabetic";
     ctx.fillStyle = "#0a0a0a";
@@ -1521,7 +1525,10 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
     } else {
       paintFallbackBackground(ctx);
     }
+    return ctx;
+  };
 
+  const drawTextElements = (ctx) => {
     // Logo
     if (logo.mode === "text" && logo.text) {
       const b = elementBox.logo;
@@ -1600,6 +1607,15 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
     }
   };
 
+  // Versión completa (fondo + texto), usada solo para exportar (capturar
+  // imagen / grabar video). La vista en vivo NO dibuja el texto en el
+  // canvas: el texto se ve a través de la capa editable de arriba, para
+  // no duplicarlo visualmente.
+  const renderPlaca = (canvas, video) => {
+    const ctx = renderBackground(canvas, video);
+    drawTextElements(ctx);
+  };
+
   const drawFrame = useCallback(() => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
@@ -1608,12 +1624,20 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
       return;
     }
     try {
-      renderPlaca(canvas, video);
+      // Mientras se está grabando el video, el texto tiene que quedar
+      // "horneado" en el canvas real (lo que ve MediaRecorder). El resto
+      // del tiempo, el canvas muestra solo el fondo y el texto lo pone la
+      // capa editable de arriba, para no verlo duplicado.
+      if (isRecording) {
+        renderPlaca(canvas, video);
+      } else {
+        renderBackground(canvas, video);
+      }
     } catch (err) {
       // no interrumpir el loop por un frame fallido
     }
     rafRef.current = requestAnimationFrame(drawFrame);
-  }, [badge, title, bullets, priceLabel, price, accent, bgMode, scrimOpacity, canvasFormat, elementBox, logo, logoImageUrl]);
+  }, [badge, title, bullets, priceLabel, price, accent, bgMode, scrimOpacity, canvasFormat, elementBox, logo, logoImageUrl, isRecording]);
 
   useEffect(() => {
     if (videoUrl || bgMode === "solid") {
@@ -1650,6 +1674,7 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
     if (!canvas) return;
     setImageCaptureError("");
     try {
+      renderPlaca(canvas, videoRef.current); // fondo + texto "horneados" para esta captura puntual
       const dataUrl = canvas.toDataURL("image/png");
       setImageUrl(dataUrl);
     } catch (err) {
@@ -1774,12 +1799,15 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
     return off.toDataURL("image/png");
   };
 
-  const generateCarousel = async (ideaObj) => {
+  const generateCarousel = async (ideaObj, countOverride) => {
     setCarouselGenerating(true);
     setCarouselError("");
     setCarouselSlides(null);
+    setCarouselSlideData(null);
 
+    const count = Math.max(2, Math.min(10, countOverride || carouselSlideCount));
     const accentColor = ACCENTS[Math.abs(hashCode(ideaObj.title || ideaObj.badge || "")) % ACCENTS.length].value;
+    setCarouselAccent(accentColor);
 
     let bgImg = null;
     const q = (ideaObj.destinations && ideaObj.destinations[0]) || ideaObj.dayName || ideaObj.badge || "";
@@ -1794,20 +1822,50 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
         // sigue con el fondo de color
       }
     }
+    carouselBgImgRef.current = bgImg;
 
-    const slides = [{ kind: "cover", badge: ideaObj.badge, title: ideaObj.title }];
-    (ideaObj.bullets || []).forEach((b, i) =>
-      slides.push({ kind: "tip", index: i + 1, total: (ideaObj.bullets || []).length, text: b })
-    );
-    if (ideaObj.cierre) slides.push({ kind: "closing", text: ideaObj.cierre });
+    const bullets = ideaObj.bullets || [];
+    const hasClosing = !!ideaObj.cierre;
+    const middleCount = Math.max(0, count - 1 - (hasClosing ? 1 : 0));
+    const slides = [{ kind: "cover", badge: ideaObj.badge || "", title: ideaObj.title || "" }];
+    for (let i = 0; i < middleCount; i++) {
+      slides.push({ kind: "tip", index: i + 1, total: middleCount, text: bullets[i] || "Editá este texto" });
+    }
+    if (hasClosing && slides.length < count) {
+      slides.push({ kind: "closing", text: ideaObj.cierre });
+    }
+    // Si por redondeo faltó o sobró alguno, ajustamos al total exacto pedido.
+    while (slides.length < count) {
+      slides.push({ kind: "tip", index: slides.length, total: count, text: "Editá este texto" });
+    }
+    while (slides.length > count) {
+      slides.splice(slides.length - (hasClosing ? 2 : 1), 1);
+    }
 
+    setCarouselSlideData(slides);
+    setCarouselGenerating(false);
+  };
+
+  // Re-renderiza las imágenes del carrusel cada vez que se edita el
+  // contenido de algún slide (texto, badge, título), así se ve al
+  // instante y cada placa queda editable una por una.
+  useEffect(() => {
+    if (!carouselSlideData) return;
     try {
-      const dataUrls = slides.map((slide) => renderSlideDataUrl(slide, accentColor, bgImg));
+      const dataUrls = carouselSlideData.map((slide) => renderSlideDataUrl(slide, carouselAccent, carouselBgImgRef.current));
       setCarouselSlides(dataUrls);
     } catch (e) {
       setCarouselError("No se pudo generar el carrusel. Probá de nuevo.");
     }
-    setCarouselGenerating(false);
+  }, [carouselSlideData, carouselAccent]);
+
+  const updateSlideField = (index, field, value) => {
+    setCarouselSlideData((prev) => {
+      if (!prev) return prev;
+      const next = [...prev];
+      next[index] = { ...next[index], [field]: value };
+      return next;
+    });
   };
 
   // =====================================================================
@@ -1880,6 +1938,7 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
     canvasRef, bgImageUrl, bgImageLoading,
     imageUrl, imageCaptureError, captureImage,
     carouselSlides, carouselGenerating, carouselError, generateCarousel, setCarouselSlides,
+    carouselSlideData, carouselSlideCount, setCarouselSlideCount, updateSlideField,
     elementBox, setElementBox, selectedElement, setSelectedElement,
     logo, setLogo, logoImageUrl, handleLogoUpload,
   };
@@ -2648,6 +2707,7 @@ function ImageEditorBlock({
   canvasRef, bgImageUrl, bgImageLoading,
   imageUrl, imageCaptureError, captureImage,
   carouselSlides, carouselGenerating, carouselError, generateCarousel, setCarouselSlides,
+  carouselSlideData, carouselSlideCount, setCarouselSlideCount, updateSlideField,
   elementBox, setElementBox, selectedElement, setSelectedElement,
   logo, setLogo, logoImageUrl, handleLogoUpload,
   onClose,
@@ -2731,6 +2791,26 @@ function ImageEditorBlock({
                 Carrusel
               </button>
             </div>
+            {imageMode === "carousel" && (
+              <div className="flex items-center justify-between pt-1">
+                <label className="text-xs md:text-sm text-neutral-400">Cantidad de placas</label>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setCarouselSlideCount(Math.max(2, carouselSlideCount - 1))}
+                    className="w-7 h-7 rounded-lg bg-neutral-800 text-neutral-200 font-bold"
+                  >
+                    −
+                  </button>
+                  <span className="text-sm md:text-base font-bold text-neutral-100 w-6 text-center">{carouselSlideCount}</span>
+                  <button
+                    onClick={() => setCarouselSlideCount(Math.min(10, carouselSlideCount + 1))}
+                    className="w-7 h-7 rounded-lg bg-neutral-800 text-neutral-200 font-bold"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+            )}
           </section>
 
           <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4">
@@ -2762,7 +2842,7 @@ function ImageEditorBlock({
       {(carouselGenerating || carouselSlides) && (
         <section className="bg-neutral-900 border border-emerald-500/40 rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm md:text-base font-bold text-neutral-200">Carrusel generado</h2>
+            <h2 className="text-sm md:text-base font-bold text-neutral-200">Carrusel generado ({carouselSlides ? carouselSlides.length : 0} placas)</h2>
             {carouselSlides && (
               <button onClick={() => setCarouselSlides(null)} className="text-[11px] md:text-sm text-neutral-500 underline underline-offset-2">
                 Cerrar
@@ -2775,13 +2855,41 @@ function ImageEditorBlock({
             </p>
           )}
           {carouselError && <p className="text-xs md:text-sm text-rose-400">{carouselError}</p>}
-          {carouselSlides && (
+          {carouselSlides && carouselSlideData && (
             <div className="grid grid-cols-2 gap-3">
               {carouselSlides.map((dataUrl, i) => (
                 <div key={i} className="space-y-1.5">
                   <img src={dataUrl} alt={`Slide ${i + 1}`} className="w-full rounded-lg border border-neutral-800" style={{ aspectRatio: `${w}/${h}`, objectFit: "cover" }} />
+                  <p className="text-[10px] md:text-xs text-neutral-500 font-semibold">
+                    Slide {i + 1} · {carouselSlideData[i].kind === "cover" ? "Portada" : carouselSlideData[i].kind === "closing" ? "Cierre" : "Tip"}
+                  </p>
+                  {carouselSlideData[i].kind === "cover" ? (
+                    <>
+                      <input
+                        value={carouselSlideData[i].badge}
+                        onChange={(e) => updateSlideField(i, "badge", e.target.value)}
+                        placeholder="Badge"
+                        className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-2 py-1.5 text-[11px] md:text-sm"
+                      />
+                      <textarea
+                        value={carouselSlideData[i].title}
+                        onChange={(e) => updateSlideField(i, "title", e.target.value)}
+                        rows={2}
+                        placeholder="Título"
+                        className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-2 py-1.5 text-[11px] md:text-sm resize-none"
+                      />
+                    </>
+                  ) : (
+                    <textarea
+                      value={carouselSlideData[i].text}
+                      onChange={(e) => updateSlideField(i, "text", e.target.value)}
+                      rows={2}
+                      placeholder="Texto de este slide"
+                      className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-2 py-1.5 text-[11px] md:text-sm resize-none"
+                    />
+                  )}
                   <a href={dataUrl} download={`placa-carrusel-${i + 1}.png`} className="w-full bg-neutral-800 border border-neutral-700 rounded-lg py-2 flex items-center justify-center gap-1.5 text-[11px] md:text-sm font-semibold">
-                    <Download size={12} /> Slide {i + 1}
+                    <Download size={12} /> Descargar slide {i + 1}
                   </a>
                 </div>
               ))}
@@ -3316,6 +3424,20 @@ function IdeasScreen({
           Contanos un evento, destino o fecha (ej: "Campeonato del Mundo", "Concierto de Tini en Buenos Aires", "Día
           de los Muertos en México") y te damos 4 ideas: educativa, inspiracional, de entretenimiento y promocional.
         </p>
+      </div>
+
+      <div className="flex flex-wrap gap-3 text-[11px] md:text-sm text-neutral-400">
+        {[
+          { key: "educativo", color: "#38bdf8", label: "Educativo — tips, checklists, qué visitar" },
+          { key: "inspiracional", color: "#a78bfa", label: "Inspiracional — reflexión, historias" },
+          { key: "entretenimiento", color: "#fbbf24", label: "Entretenimiento — trivia, juegos" },
+          { key: "promocional", color: "#34d399", label: "Promocional — oferta con precio" },
+        ].map((c) => (
+          <div key={c.key} className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: c.color }} />
+            {c.label}
+          </div>
+        ))}
       </div>
 
       <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4 space-y-3">
