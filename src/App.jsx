@@ -2465,6 +2465,7 @@ function VideoEditorBlock({
         <div className="relative rounded-2xl overflow-hidden border border-neutral-800 bg-black" style={{ aspectRatio: `${w}/${h}` }}>
           {videoUrl && (
             <video
+              key={videoUrl}
               ref={videoRef}
               src={videoUrl}
               loop
@@ -2828,7 +2829,20 @@ function CrearVideoScreen({
                       videoUrl === pickBestFile(v) ? "border-emerald-400" : "border-transparent"
                     }`}
                   >
-                    <img src={v.image} alt="" className="w-full h-full object-cover" />
+                    <video
+                      src={pickBestFile(v)}
+                      poster={v.image}
+                      muted
+                      loop
+                      playsInline
+                      preload="none"
+                      className="w-full h-full object-cover"
+                      onMouseEnter={(e) => e.currentTarget.play().catch(() => {})}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.pause();
+                        e.currentTarget.currentTime = 0;
+                      }}
+                    />
                     <span className="absolute bottom-1 right-1 text-[10px] md:text-xs bg-black/70 px-1 rounded">{Math.round(v.duration)}s</span>
                   </button>
                 ))}
