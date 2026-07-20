@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   Search, Play, Pause, Download, X, Plus, Trash2, Loader2, Film, Circle,
   Upload, Image as ImageIcon, ChevronLeft, ChevronRight, ArrowLeft,
-  Sparkles, Calendar as CalendarIcon, LayoutGrid, MessageCircle, Info,
+  Sparkles, Calendar as CalendarIcon, LayoutGrid, MessageCircle, Info, Key, Move,
 } from "lucide-react";
 
 // =====================================================================
@@ -22,6 +22,9 @@ const FORMATS = {
   story: { w: 1080, h: 1920, label: "9:16 · Historia / Reel" },
   post: { w: 1080, h: 1080, label: "1:1 · Post cuadrado" },
   portrait: { w: 1080, h: 1350, label: "4:5 · Post vertical" },
+  portrait34: { w: 1080, h: 1440, label: "3:4 · Vertical" },
+  landscape: { w: 1920, h: 1080, label: "16:9 · Horizontal" },
+  ultrawide: { w: 2560, h: 1080, label: "21:9 · Panorámico" },
 };
 
 const CATEGORY_STYLES = {
@@ -815,6 +818,136 @@ export default function PlacasApp() {
   const [logoImageUrl, setLogoImageUrl] = useState("");
   const logoImageElRef = useRef(null);
 
+  // ---- Elementos libres: cualquier cantidad de textos y formas extra,
+  // además de los campos fijos (badge/título/incluye/precio). Cada uno
+  // es arrastrable/editable directo sobre la placa. Se comparte entre
+  // todos los editores.
+  const [extraElements, setExtraElements] = useState([]);
+  const [selectedExtraId, setSelectedExtraId] = useState(null);
+  const [multiSelectIds, setMultiSelectIds] = useState([]); // selección múltiple (desde el panel de capas)
+  const extraImageElRefs = useRef({}); // id -> Image() cargada, para formas tipo imagen (no usado aún)
+
+  const addTextElement = () => {
+    const id = `t-${Date.now()}`;
+    setExtraElements((prev) => [
+      ...prev,
+      {
+        id, kind: "text", text: "Nuevo texto", x: 10, y: 20, fontSize: 44, color: "#ffffff",
+        bold: true, italic: false, underline: false, opacity: 1, rotation: 0,
+        bg: "none", bgColor: "#000000", bgOpacity: 0.5, locked: false, hidden: false,
+      },
+    ]);
+    setSelectedElement(null);
+    setSelectedExtraId(id);
+  };
+
+  const addShapeElement = (shapeType) => {
+    const id = `s-${Date.now()}`;
+    setExtraElements((prev) => [
+      ...prev,
+      {
+        id, kind: "shape", shapeType, x: 30, y: 35, w: 220, h: 220,
+        fill: accent, fillOpacity: 1, stroke: "#ffffff", strokeWidth: 0, opacity: 1, rotation: 0,
+        locked: false, hidden: false,
+      },
+    ]);
+    setSelectedElement(null);
+    setSelectedExtraId(id);
+  };
+
+  const updateExtraElement = (id, patch) => {
+    setExtraElements((prev) => prev.map((el) => (el.id === id ? { ...el, ...patch } : el)));
+  };
+  const removeExtraElement = (id) => {
+    setExtraElements((prev) => prev.filter((el) => el.id !== id));
+    setSelectedExtraId((cur) => (cur === id ? null : cur));
+    setMultiSelectIds((prev) => prev.filter((x) => x !== id));
+  };
+  const duplicateExtraElement = (id) => {
+    setExtraElements((prev) => {
+      const el = prev.find((e) => e.id === id);
+      if (!el) return prev;
+      const copy = { ...el, id: `${el.kind[0]}-${Date.now()}`, x: Math.min(88, el.x + 4), y: Math.min(88, el.y + 4) };
+      return [...prev, copy];
+    });
+  };
+
+  // ---- Capas: orden (adelante/atrás), bloquear, ocultar ----
+  const moveExtraElement = (id, direction) => {
+    setExtraElements((prev) => {
+      const idx = prev.findIndex((e) => e.id === id);
+      if (idx === -1) return prev;
+      const arr = [...prev];
+      const [item] = arr.splice(idx, 1);
+      let newIdx = idx;
+      if (direction === "up") newIdx = Math.min(arr.length, idx + 1);
+      else if (direction === "down") newIdx = Math.max(0, idx - 1);
+      else if (direction === "top") newIdx = arr.length;
+      else if (direction === "bottom") newIdx = 0;
+      arr.splice(newIdx, 0, item);
+      return arr;
+    });
+  };
+  const toggleLockElement = (id) => updateExtraElement(id, { locked: !extraElements.find((e) => e.id === id)?.locked });
+  const toggleHiddenElement = (id) => updateExtraElement(id, { hidden: !extraElements.find((e) => e.id === id)?.hidden });
+
+  // ---- Selección múltiple: mover, duplicar, eliminar varios a la vez ----
+  const toggleMultiSelect = (id) => {
+    setMultiSelectIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+  const clearMultiSelect = () => setMultiSelectIds([]);
+  const duplicateMany = (ids) => {
+    setExtraElements((prev) => {
+      const toCopy = prev.filter((e) => ids.includes(e.id));
+      const copies = toCopy.map((e) => ({
+        ...e,
+        id: `${e.kind[0]}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        x: Math.min(88, e.x + 4),
+        y: Math.min(88, e.y + 4),
+      }));
+      return [...prev, ...copies];
+    });
+    setMultiSelectIds([]);
+  };
+  const deleteMany = (ids) => {
+    setExtraElements((prev) => prev.filter((e) => !ids.includes(e.id)));
+    setMultiSelectIds([]);
+  };
+  const nudgeMany = (ids, dx, dy) => {
+    setExtraElements((prev) =>
+      prev.map((e) => (ids.includes(e.id) ? { ...e, x: Math.max(0, Math.min(92, e.x + dx)), y: Math.max(0, Math.min(95, e.y + dy)) } : e))
+    );
+  };
+
+  // ---- Audio de fondo (1 pista, con volumen y fade) ----
+  const [audioUrl, setAudioUrl] = useState("");
+  const [audioName, setAudioName] = useState("");
+  const [audioVolume, setAudioVolume] = useState(70); // 0-100
+  const [audioFadeIn, setAudioFadeIn] = useState(1); // segundos
+  const [audioFadeOut, setAudioFadeOut] = useState(1); // segundos
+  const audioRef = useRef(null);
+  const uploadedAudioUrlRef = useRef(null);
+
+  const handleAudioUpload = (e) => {
+    try {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      if (uploadedAudioUrlRef.current) URL.revokeObjectURL(uploadedAudioUrlRef.current);
+      const url = URL.createObjectURL(file);
+      uploadedAudioUrlRef.current = url;
+      setAudioUrl(url);
+      setAudioName(file.name);
+    } finally {
+      e.target.value = "";
+    }
+  };
+  const removeAudio = () => {
+    if (uploadedAudioUrlRef.current) URL.revokeObjectURL(uploadedAudioUrlRef.current);
+    uploadedAudioUrlRef.current = null;
+    setAudioUrl("");
+    setAudioName("");
+  };
+
   // ---- Posición / tamaño de cada elemento sobre la placa (editable
   // arrastrando directamente en la vista previa). x/y en % del lienzo,
   // fontSize en unidades del lienzo (1080px de ancho base). Se comparte
@@ -852,7 +985,9 @@ export default function PlacasApp() {
   };
 
   // ---- Fondo: modo (interno, según pantalla) ----
-  const [bgMode, setBgMode] = useState("video"); // video | solid
+  const [bgMode, setBgMode] = useState("video"); // video | solid | gradient
+  const [bgGradient, setBgGradient] = useState({ color1: "#10b981", color2: "#0a0a0c", angle: 135 });
+  const [bgBlur, setBgBlur] = useState(0); // 0-20px, aplica sobre cualquier fondo
 
   // ---- Pexels: video ----
   const [apiKey, setApiKey] = useState("");
@@ -887,12 +1022,16 @@ export default function PlacasApp() {
   const [imageMode, setImageMode] = useState("single"); // single | carousel
 
   // ---- Carrusel ----
-  const [carouselSlides, setCarouselSlides] = useState(null);
+  // Cada slide es una "mini placa" completa (mismos campos que la placa
+  // principal: badge, título, bullets, elementBox, logo, elementos
+  // libres, acento). Se edita SIEMPRE en la vista previa principal; las
+  // miniaturas solo sirven para elegir cuál estás editando.
+  const [carouselSlides, setCarouselSlides] = useState(null); // miniaturas (dataURL) por slide
   const [carouselGenerating, setCarouselGenerating] = useState(false);
   const [carouselError, setCarouselError] = useState("");
-  const [carouselSlideData, setCarouselSlideData] = useState(null); // contenido editable por slide
+  const [carouselSlideData, setCarouselSlideData] = useState(null); // snapshots completos por slide
   const [carouselSlideCount, setCarouselSlideCount] = useState(5);
-  const [carouselAccent, setCarouselAccent] = useState(ACCENTS[0].value);
+  const [activeCarouselIndex, setActiveCarouselIndex] = useState(0);
   const carouselBgImgRef = useRef(null);
 
   // ---- Generador de ideas ----
@@ -913,6 +1052,16 @@ export default function PlacasApp() {
   const [newEvent, setNewEvent] = useState({ name: "", month: today.getMonth(), day: "1", place: "", category: "espectaculo" });
   const [dayIdeas, setDayIdeas] = useState({}); // eventId -> { variants, loading, error, isTemplate }
   const [eventInfo, setEventInfo] = useState({}); // eventId -> { text, loading, error }
+
+  // ---- Plantillas reutilizables con variables ----
+  const [templates, setTemplates] = useState([]);
+  const [templatesLoaded, setTemplatesLoaded] = useState(false);
+
+  // ---- Escenas: varias "placas" en secuencia, cada una con su propia
+  // duración, que se graban como un solo video continuo. ----
+  const [scenes, setScenes] = useState([]);
+  const [activeSceneIndex, setActiveSceneIndex] = useState(null);
+  const [scenePlaying, setScenePlaying] = useState(false);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -960,6 +1109,27 @@ export default function PlacasApp() {
       await storage.set("custom-events", JSON.stringify(events));
     } catch (e) {
       // si falla el guardado persistente, al menos queda en memoria esta sesión
+    }
+  };
+
+  // ---- Cargar y guardar las plantillas ----
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await storage.get("placa-templates");
+        if (res && res.value) setTemplates(JSON.parse(res.value));
+      } catch (e) {
+        // todavía no había plantillas guardadas
+      }
+      setTemplatesLoaded(true);
+    })();
+  }, []);
+
+  const persistTemplates = async (list) => {
+    try {
+      await storage.set("placa-templates", JSON.stringify(list));
+    } catch (e) {
+      // si falla, al menos queda en memoria esta sesión
     }
   };
 
@@ -1375,6 +1545,100 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
   // Se usa tanto para el editor embebido en Ideas/Calendario como para
   // el editor de pantalla completa en Generador de Placas.
   // =====================================================================
+  // =====================================================================
+  // PLANTILLAS REUTILIZABLES CON VARIABLES
+  // Cualquier texto (badge, título, incluye, precio, logo, textos libres)
+  // puede tener variables tipo {{precio}}, {{destino}}, etc. Al usar la
+  // plantilla, se detectan solas y se pide completarlas.
+  // =====================================================================
+  const TEMPLATE_CATEGORIES = [
+    "Turismo", "Promociones", "Eventos", "Deportes", "Restaurantes", "Inmobiliarias",
+    "Redes Sociales", "Ofertas Flash", "Historias", "Reels", "TikTok", "YouTube Shorts",
+  ];
+  const TEMPLATE_VARS = ["titulo", "precio", "fecha", "incluye", "hotel", "destino", "logo", "telefono", "web", "instagram"];
+
+  const extractVariables = (tpl) => {
+    const texts = [
+      tpl.badge, tpl.title, tpl.priceLabel, tpl.price, tpl.logo && tpl.logo.text,
+      ...(tpl.bullets || []),
+      ...((tpl.extraElements || []).map((e) => e.text || "")),
+    ].join(" \n ");
+    const found = [];
+    const regex = /\{\{(\w+)\}\}/g;
+    let m;
+    while ((m = regex.exec(texts))) {
+      if (!found.includes(m[1])) found.push(m[1]);
+    }
+    return found;
+  };
+
+  const replaceVars = (text, values) => {
+    if (!text) return text;
+    return text.replace(/\{\{(\w+)\}\}/g, (m, key) => (values[key] !== undefined && values[key] !== "" ? values[key] : m));
+  };
+
+  const saveTemplate = (name, category, mediaType) => {
+    const tpl = {
+      id: `tpl-${Date.now()}`,
+      name: name.trim() || "Plantilla sin nombre",
+      category, mediaType, // "imagen" | "video"
+      favorite: false,
+      canvasFormat, layoutStyle, accent,
+      elementBox, logo, extraElements,
+      badge, title, bullets, priceLabel, price,
+    };
+    const next = [...templates, tpl];
+    setTemplates(next);
+    persistTemplates(next);
+    return tpl;
+  };
+
+  const applyTemplate = (tpl, values) => {
+    setCanvasFormat(tpl.canvasFormat || "story");
+    setLayoutStyle(tpl.layoutStyle || "promo");
+    setAccent(tpl.accent || ACCENTS[0].value);
+    setElementBox(tpl.elementBox || LAYOUT_PRESETS.promo);
+    setLogo(tpl.logo ? { ...tpl.logo, text: replaceVars(tpl.logo.text, values) } : { mode: "text", text: "PROVIAJES" });
+    setExtraElements((tpl.extraElements || []).map((el) => (el.kind === "text" ? { ...el, text: replaceVars(el.text, values) } : el)));
+    setBadge(replaceVars(tpl.badge, values));
+    setTitle(replaceVars(tpl.title, values));
+    setBullets((tpl.bullets || []).map((b) => replaceVars(b, values)));
+    setPriceLabel(replaceVars(tpl.priceLabel, values));
+    setPrice(replaceVars(tpl.price, values));
+    setDownloadUrl("");
+    setImageUrl("");
+    setCarouselSlides(null);
+    setSelectedElement(null);
+    setSelectedExtraId(null);
+    if (tpl.mediaType === "video") {
+      setBgMode("video");
+    } else {
+      setImageMode("single");
+      setBgMode("solid");
+    }
+    setScreen("placas");
+    setPlacasScreen(tpl.mediaType === "video" ? "video" : "imagen");
+  };
+
+  const deleteTemplate = (id) => {
+    const next = templates.filter((t) => t.id !== id);
+    setTemplates(next);
+    persistTemplates(next);
+  };
+  const duplicateTemplate = (id) => {
+    const t = templates.find((x) => x.id === id);
+    if (!t) return;
+    const copy = { ...t, id: `tpl-${Date.now()}`, name: `${t.name} (copia)` };
+    const next = [...templates, copy];
+    setTemplates(next);
+    persistTemplates(next);
+  };
+  const toggleFavoriteTemplate = (id) => {
+    const next = templates.map((t) => (t.id === id ? { ...t, favorite: !t.favorite } : t));
+    setTemplates(next);
+    persistTemplates(next);
+  };
+
   const applyIdeaToEditor = (ideaObj) => {
     setBadge(ideaObj.badge || "");
     setTitle(ideaObj.title || "");
@@ -1501,17 +1765,37 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
   // Renderizador único: dibuja fondo (video/foto/color), el logo (texto,
   // imagen o nada), y cada elemento en la posición/tamaño que tenga
   // guardado en elementBox (editable arrastrando en la vista previa).
+  const paintGradientBackground = (ctx) => {
+    const rad = (bgGradient.angle * Math.PI) / 180;
+    const x1 = CW / 2 - (Math.cos(rad) * CW) / 2;
+    const y1 = CH / 2 - (Math.sin(rad) * CH) / 2;
+    const x2 = CW / 2 + (Math.cos(rad) * CW) / 2;
+    const y2 = CH / 2 + (Math.sin(rad) * CH) / 2;
+    const grad = ctx.createLinearGradient(x1, y1, x2, y2);
+    grad.addColorStop(0, bgGradient.color1);
+    grad.addColorStop(1, bgGradient.color2);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, CW, CH);
+  };
+
   const renderBackground = (canvas, video) => {
     const ctx = canvas.getContext("2d");
     ctx.textBaseline = "alphabetic";
     ctx.fillStyle = "#0a0a0a";
     ctx.fillRect(0, 0, CW, CH);
 
-    if (video && video.videoWidth) {
+    ctx.save();
+    if (bgBlur > 0) ctx.filter = `blur(${bgBlur}px)`;
+
+    if (bgMode === "gradient") {
+      paintGradientBackground(ctx);
+      ctx.restore();
+    } else if (video && video.videoWidth) {
       const scale = Math.max(CW / video.videoWidth, CH / video.videoHeight);
       const dw = video.videoWidth * scale;
       const dh = video.videoHeight * scale;
       ctx.drawImage(video, (CW - dw) / 2, (CH - dh) / 2, dw, dh);
+      ctx.restore();
       ctx.fillStyle = `rgba(8,8,10,${scrimOpacity})`;
       ctx.fillRect(0, 0, CW, CH);
     } else if (bgImageElRef.current && bgImageElRef.current.naturalWidth) {
@@ -1520,10 +1804,12 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
       const dw = img.naturalWidth * scale;
       const dh = img.naturalHeight * scale;
       ctx.drawImage(img, (CW - dw) / 2, (CH - dh) / 2, dw, dh);
+      ctx.restore();
       ctx.fillStyle = `rgba(8,8,10,${scrimOpacity})`;
       ctx.fillRect(0, 0, CW, CH);
     } else {
       paintFallbackBackground(ctx);
+      ctx.restore();
     }
     return ctx;
   };
@@ -1607,6 +1893,117 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
     }
   };
 
+  function drawShapePath(ctx, type, w, h) {
+    ctx.beginPath();
+    if (type === "rect") {
+      ctx.rect(0, 0, w, h);
+    } else if (type === "rounded") {
+      roundRect(ctx, 0, 0, w, h, Math.min(w, h) * 0.18);
+    } else if (type === "circle") {
+      ctx.ellipse(w / 2, h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+    } else if (type === "triangle") {
+      ctx.moveTo(w / 2, 0);
+      ctx.lineTo(w, h);
+      ctx.lineTo(0, h);
+      ctx.closePath();
+    } else if (type === "line") {
+      ctx.moveTo(0, h / 2);
+      ctx.lineTo(w, h / 2);
+    } else if (type === "arrow") {
+      ctx.moveTo(0, h / 2);
+      ctx.lineTo(w * 0.75, h / 2);
+      ctx.moveTo(w * 0.72, h * 0.2);
+      ctx.lineTo(w, h / 2);
+      ctx.lineTo(w * 0.72, h * 0.8);
+    } else if (type === "star") {
+      const spikes = 5;
+      const outerR = Math.min(w, h) / 2;
+      const innerR = outerR / 2.4;
+      const cx = w / 2;
+      const cy = h / 2;
+      let rot = (Math.PI / 2) * 3;
+      const step = Math.PI / spikes;
+      ctx.moveTo(cx, cy - outerR);
+      for (let i = 0; i < spikes; i++) {
+        let x = cx + Math.cos(rot) * outerR;
+        let y = cy + Math.sin(rot) * outerR;
+        ctx.lineTo(x, y);
+        rot += step;
+        x = cx + Math.cos(rot) * innerR;
+        y = cy + Math.sin(rot) * innerR;
+        ctx.lineTo(x, y);
+        rot += step;
+      }
+      ctx.closePath();
+    }
+  }
+
+  // Dibuja los textos libres y formas agregados por el usuario (además
+  // de los campos fijos), respetando posición/tamaño/rotación/opacidad.
+  const drawExtraElements = (ctx) => {
+    extraElements.forEach((el) => {
+      if (el.hidden) return;
+      ctx.save();
+      ctx.globalAlpha = el.opacity ?? 1;
+      const cx = (el.x / 100) * CW;
+      const cy = (el.y / 100) * CH;
+
+      if (el.kind === "shape") {
+        const w = el.w;
+        const h = el.h;
+        ctx.translate(cx + w / 2, cy + h / 2);
+        ctx.rotate(((el.rotation || 0) * Math.PI) / 180);
+        ctx.translate(-w / 2, -h / 2);
+        drawShapePath(ctx, el.shapeType, w, h);
+        if (el.fill && el.fill !== "none") {
+          ctx.globalAlpha = (el.opacity ?? 1) * (el.fillOpacity ?? 1);
+          ctx.fillStyle = el.fill;
+          ctx.fill();
+          ctx.globalAlpha = el.opacity ?? 1;
+        }
+        if (el.strokeWidth > 0) {
+          ctx.strokeStyle = el.stroke;
+          ctx.lineWidth = el.strokeWidth;
+          ctx.stroke();
+        }
+      } else if (el.kind === "text") {
+        ctx.translate(cx, cy);
+        ctx.rotate(((el.rotation || 0) * Math.PI) / 180);
+        const weight = el.bold ? 800 : 500;
+        const style = el.italic ? "italic" : "normal";
+        ctx.font = `${style} ${weight} ${el.fontSize}px Manrope, sans-serif`;
+        const metrics = ctx.measureText(el.text || "");
+        if (el.bg && el.bg !== "none") {
+          const padX = el.fontSize * 0.4;
+          const padY = el.fontSize * 0.3;
+          const bw = metrics.width + padX * 2;
+          const bh = el.fontSize + padY * 2;
+          ctx.fillStyle = hexToRgba(el.bgColor, el.bgOpacity ?? 0.5);
+          if (el.bg === "pill" || el.bg === "circle") {
+            roundRect(ctx, -padX, -padY, bw, bh, bh / 2);
+          } else if (el.bg === "rounded") {
+            roundRect(ctx, -padX, -padY, bw, bh, 12);
+          } else {
+            ctx.beginPath();
+            ctx.rect(-padX, -padY, bw, bh);
+          }
+          ctx.fill();
+        }
+        ctx.fillStyle = el.color;
+        ctx.fillText(el.text || "", 0, el.fontSize * 0.8);
+        if (el.underline) {
+          ctx.strokeStyle = el.color;
+          ctx.lineWidth = Math.max(2, el.fontSize * 0.05);
+          ctx.beginPath();
+          ctx.moveTo(0, el.fontSize * 0.95);
+          ctx.lineTo(metrics.width, el.fontSize * 0.95);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    });
+  };
+
   // Versión completa (fondo + texto), usada solo para exportar (capturar
   // imagen / grabar video). La vista en vivo NO dibuja el texto en el
   // canvas: el texto se ve a través de la capa editable de arriba, para
@@ -1614,6 +2011,7 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
   const renderPlaca = (canvas, video) => {
     const ctx = renderBackground(canvas, video);
     drawTextElements(ctx);
+    drawExtraElements(ctx);
   };
 
   const drawFrame = useCallback(() => {
@@ -1637,7 +2035,7 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
       // no interrumpir el loop por un frame fallido
     }
     rafRef.current = requestAnimationFrame(drawFrame);
-  }, [badge, title, bullets, priceLabel, price, accent, bgMode, scrimOpacity, canvasFormat, elementBox, logo, logoImageUrl, isRecording]);
+  }, [badge, title, bullets, priceLabel, price, accent, bgMode, scrimOpacity, canvasFormat, elementBox, logo, logoImageUrl, isRecording, extraElements, bgGradient, bgBlur]);
 
   useEffect(() => {
     if (videoUrl || bgMode === "solid") {
@@ -1684,6 +2082,37 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
     }
   };
 
+  const audioCtxRef = useRef(null);
+  const audioSourceNodeRef = useRef(null);
+  const audioGainNodeRef = useRef(null);
+  const audioDestRef = useRef(null);
+
+  // Arma (una sola vez por elemento <audio>) el grafo de Web Audio que
+  // permite controlar volumen y fade, y obtener una pista de audio para
+  // mezclar con el video grabado.
+  const setupAudioGraph = () => {
+    if (!audioRef.current) return null;
+    try {
+      if (!audioCtxRef.current) {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        const ctx = new Ctx();
+        const source = ctx.createMediaElementSource(audioRef.current);
+        const gain = ctx.createGain();
+        const dest = ctx.createMediaStreamDestination();
+        source.connect(gain);
+        gain.connect(dest);
+        gain.connect(ctx.destination); // para poder escucharlo mientras se graba
+        audioCtxRef.current = ctx;
+        audioSourceNodeRef.current = source;
+        audioGainNodeRef.current = gain;
+        audioDestRef.current = dest;
+      }
+      return { ctx: audioCtxRef.current, gain: audioGainNodeRef.current, dest: audioDestRef.current };
+    } catch (e) {
+      return null;
+    }
+  };
+
   const startRecording = () => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
@@ -1694,12 +2123,19 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
     video.muted = true;
     video.currentTime = 0;
 
-    const stream = canvas.captureStream(30);
+    const canvasStream = canvas.captureStream(30);
+    let combinedStream = canvasStream;
+
+    const audioGraph = audioUrl ? setupAudioGraph() : null;
+    if (audioGraph) {
+      combinedStream = new MediaStream([...canvasStream.getVideoTracks(), ...audioGraph.dest.stream.getAudioTracks()]);
+    }
+
     let mimeType = "video/webm;codecs=vp9";
     if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = "video/webm";
 
     // Bitrate alto para la mejor calidad posible en la descarga.
-    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 10_000_000 });
+    const recorder = new MediaRecorder(combinedStream, { mimeType, videoBitsPerSecond: 10_000_000 });
     chunksRef.current = [];
     recorder.ondataavailable = (e) => {
       if (e.data.size > 0) chunksRef.current.push(e.data);
@@ -1711,6 +2147,7 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
       setRecordProgress(0);
       video.pause();
       setIsPlaying(false);
+      if (audioGraph) audioRef.current.pause();
     };
 
     recorderRef.current = recorder;
@@ -1718,6 +2155,20 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
     setIsRecording(true);
     video.play();
     setIsPlaying(true);
+
+    if (audioGraph) {
+      audioRef.current.currentTime = 0;
+      const now = audioGraph.ctx.currentTime;
+      const targetVol = audioVolume / 100;
+      const fadeInEnd = Math.min(audioFadeIn, clipSeconds / 2);
+      const fadeOutStart = Math.max(fadeInEnd, clipSeconds - audioFadeOut);
+      audioGraph.gain.gain.cancelScheduledValues(now);
+      audioGraph.gain.gain.setValueAtTime(0, now);
+      audioGraph.gain.gain.linearRampToValueAtTime(targetVol, now + fadeInEnd);
+      audioGraph.gain.gain.setValueAtTime(targetVol, now + fadeOutStart);
+      audioGraph.gain.gain.linearRampToValueAtTime(0, now + clipSeconds);
+      audioRef.current.play().catch(() => {});
+    }
 
     const durationMs = clipSeconds * 1000;
     const startTime = Date.now();
@@ -1734,69 +2185,251 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
     }, durationMs);
   };
 
-  const paintSlideBackground = (ctx, bgImg, accentColor) => {
-    if (bgImg && bgImg.naturalWidth) {
-      const scale = Math.max(CW / bgImg.naturalWidth, CH / bgImg.naturalHeight);
-      const dw = bgImg.naturalWidth * scale;
-      const dh = bgImg.naturalHeight * scale;
-      ctx.drawImage(bgImg, (CW - dw) / 2, (CH - dh) / 2, dw, dh);
-      ctx.fillStyle = "rgba(8,8,10,0.55)";
-      ctx.fillRect(0, 0, CW, CH);
-    } else {
-      paintFallbackBackground(ctx, accentColor);
+  // =====================================================================
+  // ESCENAS: varias "placas" en secuencia. Cada escena guarda una foto
+  // completa del editor (fondo, textos, formas, logo, etc.) más su
+  // duración. Se pueden previsualizar en cadena y grabar como un solo
+  // video continuo (corte directo entre una y otra).
+  // =====================================================================
+  const captureCurrentAsScene = () => {
+    const scene = {
+      id: `scene-${Date.now()}`,
+      name: `Escena ${scenes.length + 1}`,
+      duration: Math.min(10, Math.max(2, clipSeconds || 3)),
+      videoUrl, bgImageUrl, bgMode, bgGradient, bgBlur,
+      canvasFormat, layoutStyle, accent,
+      elementBox, logo, logoImageUrl,
+      extraElements,
+      badge, title, bullets, priceLabel, price,
+    };
+    setScenes((prev) => [...prev, scene]);
+    setActiveSceneIndex(scenes.length);
+  };
+
+  const loadScene = async (scene) => {
+    setCanvasFormat(scene.canvasFormat);
+    setLayoutStyle(scene.layoutStyle);
+    setAccent(scene.accent);
+    setElementBox(scene.elementBox);
+    setLogo(scene.logo);
+    setExtraElements(scene.extraElements);
+    setBadge(scene.badge);
+    setTitle(scene.title);
+    setBullets(scene.bullets);
+    setPriceLabel(scene.priceLabel);
+    setPrice(scene.price);
+    setBgMode(scene.bgMode);
+    setBgGradient(scene.bgGradient);
+    setBgBlur(scene.bgBlur);
+    setVideoUrl(scene.videoUrl || "");
+    setLogoImageUrl(scene.logoImageUrl || "");
+    bgImageElRef.current = null;
+    setBgImageUrl(scene.bgImageUrl || "");
+    if (scene.bgImageUrl) {
+      try {
+        bgImageElRef.current = await loadImageElement(scene.bgImageUrl);
+      } catch (e) {
+        // se queda con el fondo de color de respaldo
+      }
+    }
+    logoImageElRef.current = null;
+    if (scene.logoImageUrl) {
+      try {
+        logoImageElRef.current = await loadImageElement(scene.logoImageUrl);
+      } catch (e) {
+        // sin logo imagen si falla
+      }
     }
   };
 
-  const renderSlideDataUrl = (slide, accentColor, bgImg) => {
-    const off = document.createElement("canvas");
-    off.width = CW;
-    off.height = CH;
-    const ctx = off.getContext("2d");
-    ctx.textBaseline = "alphabetic";
-    paintSlideBackground(ctx, bgImg, accentColor);
+  const selectSceneForEditing = async (index) => {
+    setActiveSceneIndex(index);
+    await loadScene(scenes[index]);
+  };
 
-    ctx.font = "700 32px Manrope, sans-serif";
-    ctx.fillStyle = "rgba(255,255,255,0.8)";
-    ctx.fillText("PROVIAJES", 56, 90);
+  const updateSceneFromCurrent = (index) => {
+    setScenes((prev) =>
+      prev.map((s, i) =>
+        i === index
+          ? {
+              ...s,
+              videoUrl, bgImageUrl, bgMode, bgGradient, bgBlur,
+              canvasFormat, layoutStyle, accent, elementBox, logo, logoImageUrl, extraElements,
+              badge, title, bullets, priceLabel, price,
+            }
+          : s
+      )
+    );
+  };
 
-    if (slide.kind === "cover") {
-      if (slide.badge) {
-        ctx.font = "800 28px Manrope, sans-serif";
-        const bw = ctx.measureText(slide.badge.toUpperCase()).width + 60;
-        ctx.fillStyle = accentColor;
-        roundRect(ctx, 56, 130, bw, 58, 29);
-        ctx.fill();
-        ctx.fillStyle = "#0b0b0b";
-        ctx.fillText(slide.badge.toUpperCase(), 86, 168);
-      }
-      const lines = (slide.title || "").split("\n").filter((l) => l.trim());
-      const lineHeight = 100;
-      let y = CH / 2 - (lines.length * lineHeight) / 2 + 36;
-      ctx.font = "800 92px Manrope, sans-serif";
-      lines.forEach((line, i) => {
-        ctx.fillStyle = i === lines.length - 1 ? accentColor : "#ffffff";
-        y = wrapText(ctx, line, 56, y, CW - 112, 100);
-      });
-      ctx.font = "600 32px Manrope, sans-serif";
-      ctx.fillStyle = "rgba(255,255,255,0.7)";
-      ctx.fillText("Deslizá para ver más →", 56, CH - 90);
-    } else if (slide.kind === "tip") {
-      ctx.font = "800 30px Manrope, sans-serif";
-      ctx.fillStyle = accentColor;
-      ctx.fillText(`TIP ${slide.index}/${slide.total}`, 56, 220);
-      ctx.font = "800 68px Manrope, sans-serif";
-      ctx.fillStyle = "#ffffff";
-      wrapText(ctx, slide.text, 56, CH / 2 - 20, CW - 112, 78);
-    } else if (slide.kind === "closing") {
-      ctx.font = "800 30px Manrope, sans-serif";
-      ctx.fillStyle = accentColor;
-      ctx.fillText("PARA CERRAR", 56, 220);
-      ctx.font = "800 72px Manrope, sans-serif";
-      ctx.fillStyle = "#ffffff";
-      wrapText(ctx, slide.text, 56, CH / 2 - 20, CW - 112, 82);
+  const removeScene = (id) => {
+    setScenes((prev) => prev.filter((s) => s.id !== id));
+    setActiveSceneIndex(null);
+  };
+  const duplicateScene = (id) => {
+    setScenes((prev) => {
+      const s = prev.find((x) => x.id === id);
+      if (!s) return prev;
+      return [...prev, { ...s, id: `scene-${Date.now()}`, name: `${s.name} (copia)` }];
+    });
+  };
+  const moveScene = (id, direction) => {
+    setScenes((prev) => {
+      const idx = prev.findIndex((s) => s.id === id);
+      if (idx === -1) return prev;
+      const arr = [...prev];
+      const newIdx = direction === "up" ? Math.max(0, idx - 1) : Math.min(arr.length - 1, idx + 1);
+      const [item] = arr.splice(idx, 1);
+      arr.splice(newIdx, 0, item);
+      return arr;
+    });
+  };
+  const updateSceneField = (id, field, value) => {
+    setScenes((prev) => prev.map((s) => (s.id === id ? { ...s, [field]: value } : s)));
+  };
+
+  // Reproduce todas las escenas en cadena en la vista previa en vivo,
+  // para chequear el flujo antes de grabar.
+  const playAllScenes = async () => {
+    if (scenes.length === 0 || scenePlaying) return;
+    setScenePlaying(true);
+    for (let i = 0; i < scenes.length; i++) {
+      setActiveSceneIndex(i);
+      await loadScene(scenes[i]);
+      await new Promise((res) => setTimeout(res, scenes[i].duration * 1000));
+    }
+    setScenePlaying(false);
+  };
+
+  // Graba TODAS las escenas como un solo video continuo: una sesión de
+  // MediaRecorder que va cambiando de escena en los momentos justos.
+  const startRecordingScenes = async () => {
+    const canvas = canvasRef.current;
+    if (!canvas || scenes.length === 0) return;
+    setDownloadUrl("");
+    setImageUrl("");
+
+    await loadScene(scenes[0]);
+    setActiveSceneIndex(0);
+    await new Promise((res) => setTimeout(res, 60)); // deja que el <video> monte con la nueva src
+
+    const video = videoRef.current;
+    if (video) {
+      video.muted = true;
+      video.currentTime = 0;
     }
 
-    return off.toDataURL("image/png");
+    const canvasStream = canvas.captureStream(30);
+    let combinedStream = canvasStream;
+    const audioGraph = audioUrl ? setupAudioGraph() : null;
+    if (audioGraph) {
+      combinedStream = new MediaStream([...canvasStream.getVideoTracks(), ...audioGraph.dest.stream.getAudioTracks()]);
+    }
+
+    let mimeType = "video/webm;codecs=vp9";
+    if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = "video/webm";
+    const recorder = new MediaRecorder(combinedStream, { mimeType, videoBitsPerSecond: 10_000_000 });
+    chunksRef.current = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data);
+    };
+    const totalDuration = scenes.reduce((sum, s) => sum + s.duration, 0);
+
+    recorder.onstop = () => {
+      const blob = new Blob(chunksRef.current, { type: "video/webm" });
+      setDownloadUrl(URL.createObjectURL(blob));
+      setIsRecording(false);
+      setRecordProgress(0);
+      if (videoRef.current) videoRef.current.pause();
+      setIsPlaying(false);
+      if (audioGraph) audioRef.current.pause();
+    };
+
+    recorderRef.current = recorder;
+    recorder.start();
+    setIsRecording(true);
+    if (video) {
+      video.play();
+      setIsPlaying(true);
+    }
+
+    if (audioGraph) {
+      audioRef.current.currentTime = 0;
+      const now = audioGraph.ctx.currentTime;
+      const targetVol = audioVolume / 100;
+      const fadeInEnd = Math.min(audioFadeIn, totalDuration / 2);
+      const fadeOutStart = Math.max(fadeInEnd, totalDuration - audioFadeOut);
+      audioGraph.gain.gain.cancelScheduledValues(now);
+      audioGraph.gain.gain.setValueAtTime(0, now);
+      audioGraph.gain.gain.linearRampToValueAtTime(targetVol, now + fadeInEnd);
+      audioGraph.gain.gain.setValueAtTime(targetVol, now + fadeOutStart);
+      audioGraph.gain.gain.linearRampToValueAtTime(0, now + totalDuration);
+      audioRef.current.play().catch(() => {});
+    }
+
+    const startTime = Date.now();
+    const progressTimer = setInterval(() => {
+      const pct = Math.min(100, ((Date.now() - startTime) / (totalDuration * 1000)) * 100);
+      setRecordProgress(pct);
+      if (pct >= 100) clearInterval(progressTimer);
+    }, 100);
+
+    // Cadena de cambios de escena en los momentos exactos (corte directo).
+    let elapsed = 0;
+    for (let i = 1; i < scenes.length; i++) {
+      elapsed += scenes[i - 1].duration;
+      setTimeout(() => {
+        setActiveSceneIndex(i);
+        loadScene(scenes[i]).then(() => {
+          if (videoRef.current) {
+            videoRef.current.currentTime = 0;
+            videoRef.current.play().catch(() => {});
+          }
+        });
+      }, elapsed * 1000);
+    }
+
+    setTimeout(() => {
+      if (recorderRef.current && recorderRef.current.state !== "inactive") {
+        recorderRef.current.stop();
+      }
+    }, totalDuration * 1000);
+  };
+
+  // Arma un snapshot completo de "mini placa" a partir de la placa que
+  // se está viendo en este momento en la vista principal.
+  const captureLiveAsSlideSnapshot = (extra = {}) => ({
+    badge, title, bullets, priceLabel, price,
+    elementBox, logo, extraElements, accent,
+    ...extra,
+  });
+
+  // Vuelca un snapshot de slide a la placa principal (así se edita con
+  // el mismo sistema de arrastrar/tocar de siempre).
+  const applySlideSnapshotToLive = (snap) => {
+    if (!snap) return;
+    setBadge(snap.badge || "");
+    setTitle(snap.title || "");
+    setBullets(snap.bullets && snap.bullets.length ? snap.bullets : [""]);
+    setPriceLabel(snap.priceLabel || "");
+    setPrice(snap.price || "");
+    setElementBox(snap.elementBox || LAYOUT_PRESETS.titular);
+    setLogo(snap.logo || { mode: "text", text: "PROVIAJES" });
+    setExtraElements(snap.extraElements || []);
+    setAccent(snap.accent || ACCENTS[0].value);
+  };
+
+  // Captura lo que se ve AHORA en el canvas principal como miniatura
+  // (fondo + texto "horneados"), igual que al exportar una imagen.
+  const captureThumbnailFromLiveCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    try {
+      renderPlaca(canvas, null);
+      return canvas.toDataURL("image/png");
+    } catch (e) {
+      return null;
+    }
   };
 
   const generateCarousel = async (ideaObj, countOverride) => {
@@ -1807,7 +2440,6 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
 
     const count = Math.max(2, Math.min(10, countOverride || carouselSlideCount));
     const accentColor = ACCENTS[Math.abs(hashCode(ideaObj.title || ideaObj.badge || "")) % ACCENTS.length].value;
-    setCarouselAccent(accentColor);
 
     let bgImg = null;
     const q = (ideaObj.destinations && ideaObj.destinations[0]) || ideaObj.dayName || ideaObj.badge || "";
@@ -1823,49 +2455,90 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
       }
     }
     carouselBgImgRef.current = bgImg;
+    bgImageElRef.current = bgImg;
+    setBgMode("solid");
 
     const bullets = ideaObj.bullets || [];
     const hasClosing = !!ideaObj.cierre;
     const middleCount = Math.max(0, count - 1 - (hasClosing ? 1 : 0));
-    const slides = [{ kind: "cover", badge: ideaObj.badge || "", title: ideaObj.title || "" }];
+    const sharedElementBox = LAYOUT_PRESETS.titular;
+    const sharedLogo = logo;
+
+    const makeSlide = (badgeText, titleText) => ({
+      id: `slide-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      badge: badgeText, title: titleText, bullets: [""], priceLabel: "", price: "",
+      elementBox: sharedElementBox, logo: sharedLogo, extraElements: [], accent: accentColor,
+    });
+
+    const slides = [makeSlide(ideaObj.badge || "", ideaObj.title || "")];
     for (let i = 0; i < middleCount; i++) {
-      slides.push({ kind: "tip", index: i + 1, total: middleCount, text: bullets[i] || "Editá este texto" });
+      slides.push(makeSlide(`TIP ${i + 1}/${middleCount}`, bullets[i] || "Editá este texto"));
     }
     if (hasClosing && slides.length < count) {
-      slides.push({ kind: "closing", text: ideaObj.cierre });
+      slides.push(makeSlide("PARA CERRAR", ideaObj.cierre));
     }
-    // Si por redondeo faltó o sobró alguno, ajustamos al total exacto pedido.
     while (slides.length < count) {
-      slides.push({ kind: "tip", index: slides.length, total: count, text: "Editá este texto" });
+      slides.push(makeSlide(`TIP ${slides.length}`, "Editá este texto"));
     }
     while (slides.length > count) {
       slides.splice(slides.length - (hasClosing ? 2 : 1), 1);
     }
 
-    setCarouselSlideData(slides);
-    setCarouselGenerating(false);
-  };
-
-  // Re-renderiza las imágenes del carrusel cada vez que se edita el
-  // contenido de algún slide (texto, badge, título), así se ve al
-  // instante y cada placa queda editable una por una.
-  useEffect(() => {
-    if (!carouselSlideData) return;
+    // Genera la miniatura de cada slide aplicándola un instante a la
+    // vista en vivo y capturando el canvas — así usa exactamente el
+    // mismo motor de dibujo que el resto de la app.
+    const thumbs = [];
     try {
-      const dataUrls = carouselSlideData.map((slide) => renderSlideDataUrl(slide, carouselAccent, carouselBgImgRef.current));
-      setCarouselSlides(dataUrls);
+      for (let i = 0; i < slides.length; i++) {
+        applySlideSnapshotToLive(slides[i]);
+        await new Promise((res) => setTimeout(res, 90));
+        thumbs.push(captureThumbnailFromLiveCanvas());
+      }
     } catch (e) {
       setCarouselError("No se pudo generar el carrusel. Probá de nuevo.");
     }
-  }, [carouselSlideData, carouselAccent]);
 
-  const updateSlideField = (index, field, value) => {
+    setCarouselSlideData(slides);
+    setCarouselSlides(thumbs);
+    setActiveCarouselIndex(0);
+    applySlideSnapshotToLive(slides[0]);
+    setCarouselGenerating(false);
+  };
+
+  // Cambia cuál slide se está editando en la vista principal: guarda lo
+  // editado en la que se deja (con su miniatura actualizada) y carga la
+  // nueva.
+  const switchCarouselSlide = (index) => {
+    if (!carouselSlideData || index === activeCarouselIndex) return;
+    const snap = captureLiveAsSlideSnapshot();
+    const thumb = captureThumbnailFromLiveCanvas();
     setCarouselSlideData((prev) => {
-      if (!prev) return prev;
       const next = [...prev];
-      next[index] = { ...next[index], [field]: value };
+      next[activeCarouselIndex] = { ...next[activeCarouselIndex], ...snap };
       return next;
     });
+    if (thumb) {
+      setCarouselSlides((prev) => {
+        const next = [...prev];
+        next[activeCarouselIndex] = thumb;
+        return next;
+      });
+    }
+    applySlideSnapshotToLive(carouselSlideData[index]);
+    setActiveCarouselIndex(index);
+  };
+
+  const downloadCarouselSlide = (index) => {
+    let url = carouselSlides ? carouselSlides[index] : null;
+    if (index === activeCarouselIndex) {
+      const fresh = captureThumbnailFromLiveCanvas();
+      if (fresh) url = fresh;
+    }
+    if (!url) return;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `placa-carrusel-${index + 1}.png`;
+    a.click();
   };
 
   // =====================================================================
@@ -1938,9 +2611,15 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
     canvasRef, bgImageUrl, bgImageLoading,
     imageUrl, imageCaptureError, captureImage,
     carouselSlides, carouselGenerating, carouselError, generateCarousel, setCarouselSlides,
-    carouselSlideData, carouselSlideCount, setCarouselSlideCount, updateSlideField,
+    carouselSlideData, carouselSlideCount, setCarouselSlideCount, activeCarouselIndex, switchCarouselSlide, downloadCarouselSlide,
     elementBox, setElementBox, selectedElement, setSelectedElement,
     logo, setLogo, logoImageUrl, handleLogoUpload,
+    extraElements, selectedExtraId, setSelectedExtraId, updateExtraElement, removeExtraElement, duplicateExtraElement,
+    addTextElement, addShapeElement,
+    saveTemplate, TEMPLATE_CATEGORIES,
+    bgMode, setBgMode, bgGradient, setBgGradient, bgBlur, setBgBlur,
+    moveExtraElement, toggleLockElement, toggleHiddenElement,
+    multiSelectIds, toggleMultiSelect, clearMultiSelect, duplicateMany, deleteMany, nudgeMany,
   };
 
   const videoEditorProps = {
@@ -1956,6 +2635,17 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
     startRecording, downloadUrl,
     elementBox, setElementBox, selectedElement, setSelectedElement,
     logo, setLogo, logoImageUrl, handleLogoUpload,
+    extraElements, selectedExtraId, setSelectedExtraId, updateExtraElement, removeExtraElement, duplicateExtraElement,
+    addTextElement, addShapeElement,
+    audioUrl, audioName, audioVolume, setAudioVolume, audioFadeIn, setAudioFadeIn, audioFadeOut, setAudioFadeOut,
+    handleAudioUpload, removeAudio, audioRef,
+    saveTemplate, TEMPLATE_CATEGORIES,
+    bgMode, setBgMode, bgGradient, setBgGradient, bgBlur, setBgBlur,
+    moveExtraElement, toggleLockElement, toggleHiddenElement,
+    multiSelectIds, toggleMultiSelect, clearMultiSelect, duplicateMany, deleteMany, nudgeMany,
+    scenes, activeSceneIndex, scenePlaying,
+    captureCurrentAsScene, selectSceneForEditing, updateSceneFromCurrent, removeScene, duplicateScene, moveScene,
+    updateSceneField, playAllScenes, startRecordingScenes,
   };
 
   // =====================================================================
@@ -1987,21 +2677,42 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
                 {screen === "placas" && placasScreen === "welcome" && "Generador de Placas"}
                 {screen === "placas" && placasScreen === "imagen" && "Crear Imagen"}
                 {screen === "placas" && placasScreen === "video" && "Crear Video"}
+                {screen === "placas" && placasScreen === "plantillas" && "Plantillas"}
                 {screen === "ideas" && "Generador de Ideas"}
                 {screen === "calendario" && "Calendario"}
+                {screen === "apis" && "APIs"}
               </h1>
             </div>
           </header>
 
-          <main className="px-5 py-6 space-y-6 max-w-md md:max-w-3xl lg:max-w-5xl mx-auto pb-16">
+          <main className="px-5 py-6 space-y-6 max-w-md md:max-w-3xl lg:max-w-6xl xl:max-w-[1600px] mx-auto pb-16">
+            {screen === "apis" && <ApisScreen apiKey={apiKey} setApiKey={setApiKey} />}
+
             {screen === "placas" && placasScreen === "welcome" && (
-              <PlacasWelcome onCrearImagen={() => { setPlacasScreen("imagen"); setBgMode("solid"); }} onCrearVideo={() => { setPlacasScreen("video"); setBgMode("video"); }} />
+              <PlacasWelcome
+                onCrearImagen={() => { setPlacasScreen("imagen"); setBgMode("solid"); }}
+                onCrearVideo={() => { setPlacasScreen("video"); setBgMode("video"); }}
+                onPlantillas={() => setPlacasScreen("plantillas")}
+              />
+            )}
+
+            {screen === "placas" && placasScreen === "plantillas" && (
+              <TemplatesScreen
+                templates={templates}
+                templatesLoaded={templatesLoaded}
+                TEMPLATE_CATEGORIES={TEMPLATE_CATEGORIES}
+                extractVariables={extractVariables}
+                applyTemplate={applyTemplate}
+                deleteTemplate={deleteTemplate}
+                duplicateTemplate={duplicateTemplate}
+                toggleFavoriteTemplate={toggleFavoriteTemplate}
+              />
             )}
 
             {screen === "placas" && placasScreen === "imagen" && (
               <CrearImagenScreen
                 editorProps={imageEditorProps}
-                apiKey={apiKey} setApiKey={setApiKey} showKeyHelp={showKeyHelp} setShowKeyHelp={setShowKeyHelp}
+                apiKey={apiKey} goToApis={() => setScreen("apis")}
                 photoQuery={photoQuery} setPhotoQuery={setPhotoQuery} photoResults={photoResults}
                 photoSearching={photoSearching} photoSearchError={photoSearchError}
                 photoHasMore={photoHasMore} photoLoadingMore={photoLoadingMore} loadMorePhotos={loadMorePhotos}
@@ -2025,7 +2736,7 @@ Devolvé SOLO un array JSON válido de exactamente 4 objetos, sin texto adiciona
             {screen === "placas" && placasScreen === "video" && (
               <CrearVideoScreen
                 editorProps={videoEditorProps}
-                apiKey={apiKey} setApiKey={setApiKey} showKeyHelp={showKeyHelp} setShowKeyHelp={setShowKeyHelp}
+                apiKey={apiKey} goToApis={() => setScreen("apis")}
                 query={query} setQuery={setQuery} results={results} searching={searching} searchError={searchError}
                 videoHasMore={videoHasMore} videoLoadingMore={videoLoadingMore} loadMoreVideos={loadMoreVideos}
                 doSearch={doSearch} selectVideo={selectVideo} pickBestFile={pickBestFile} videoUrl={videoUrl}
@@ -2146,6 +2857,19 @@ function HomeScreen({ onNavigate }) {
               <p className="text-xs md:text-sm text-neutral-500">Fechas festivas, deportivas y de espectáculos</p>
             </div>
           </button>
+
+          <button
+            onClick={() => onNavigate("apis")}
+            className="w-full text-left bg-neutral-900/80 backdrop-blur border border-neutral-800 rounded-2xl p-4 flex items-center gap-4 hover:border-amber-500/50 transition-colors"
+          >
+            <div className="w-11 h-11 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0">
+              <Key size={20} className="text-amber-400" />
+            </div>
+            <div>
+              <p className="font-bold text-sm md:text-base">APIs</p>
+              <p className="text-xs md:text-sm text-neutral-500">Configurá tu API key de Pexels (fotos y videos)</p>
+            </div>
+          </button>
         </div>
       </div>
     </div>
@@ -2153,9 +2877,70 @@ function HomeScreen({ onNavigate }) {
 }
 
 // =====================================================================
+// APIs — configuración centralizada de API keys, fuera de los editores
+// =====================================================================
+function ApisScreen({ apiKey, setApiKey }) {
+  const [showHelp, setShowHelp] = useState(false);
+
+  return (
+    <div className="space-y-6 pt-2">
+      <div>
+        <h2 className="text-lg md:text-2xl font-bold">APIs</h2>
+        <p className="text-sm md:text-base text-neutral-400 mt-1.5 leading-relaxed">
+          Configurá acá tus claves de conexión una sola vez — se guardan solas y se usan automáticamente en todos
+          los editores (buscador de fotos y de videos).
+        </p>
+      </div>
+
+      <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm md:text-base font-bold text-neutral-200 flex items-center gap-1.5">
+            <Key size={15} className="text-amber-400" /> Pexels (fotos y videos)
+          </h3>
+          {apiKey.trim() && <span className="text-[11px] md:text-sm text-emerald-400 font-semibold">✓ Configurada</span>}
+        </div>
+
+        <button onClick={() => setShowHelp(!showHelp)} className="text-[11px] md:text-sm text-emerald-400 underline underline-offset-2">
+          ¿Cómo consigo mi API key gratis?
+        </button>
+        {showHelp && (
+          <ol className="text-[11px] md:text-sm text-neutral-400 leading-relaxed list-decimal list-inside space-y-1">
+            <li>Entrá a pexels.com/api</li>
+            <li>Tocá "Get Started" y creá una cuenta gratis (con Google o email)</li>
+            <li>Apenas confirmás, te muestra tu API key al instante — copiala</li>
+            <li>Pegala acá abajo</li>
+          </ol>
+        )}
+
+        <input
+          type="password"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder="Pegá tu API key de Pexels acá"
+          className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2.5 text-sm md:text-base focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        />
+        <p className="text-[11px] md:text-sm text-neutral-500">
+          Se guarda automáticamente en este navegador — no hace falta volver a pegarla cada vez.
+        </p>
+      </section>
+
+      <section className="bg-neutral-900/60 border border-dashed border-neutral-800 rounded-2xl p-4 space-y-1">
+        <h3 className="text-sm md:text-base font-bold text-neutral-400">Anthropic (IA de ideas)</h3>
+        <p className="text-[11px] md:text-sm text-neutral-500 leading-relaxed">
+          El generador de ideas usa la IA directo mientras estás acá dentro de Claude, sin necesitar ninguna key. Si
+          publicás esta app de forma independiente (por ejemplo en Vercel), esa conexión especial ya no está
+          disponible y el generador usa las plantillas locales — para tener IA real ahí también hace falta tu
+          propia API key de Anthropic más un pequeño backend.
+        </p>
+      </section>
+    </div>
+  );
+}
+
+// =====================================================================
 // GENERADOR DE PLACAS — bienvenida
 // =====================================================================
-function PlacasWelcome({ onCrearImagen, onCrearVideo }) {
+function PlacasWelcome({ onCrearImagen, onCrearVideo, onPlantillas }) {
   return (
     <div className="space-y-6 pt-4">
       <div>
@@ -2188,6 +2973,18 @@ function PlacasWelcome({ onCrearImagen, onCrearVideo }) {
           <div>
             <p className="font-bold">Crear Video</p>
             <p className="text-xs md:text-sm text-neutral-500">Placa animada con video de fondo</p>
+          </div>
+        </button>
+        <button
+          onClick={onPlantillas}
+          className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl p-5 text-left hover:border-violet-500/50 transition-colors flex items-center gap-4"
+        >
+          <div className="w-12 h-12 rounded-xl bg-violet-500/15 flex items-center justify-center shrink-0">
+            <LayoutGrid size={22} className="text-violet-400" />
+          </div>
+          <div>
+            <p className="font-bold">Plantillas</p>
+            <p className="text-xs md:text-sm text-neutral-500">Guardadas, con variables tipo {"{{precio}}"}, {"{{destino}}"}</p>
           </div>
         </button>
       </div>
@@ -2431,15 +3228,70 @@ function CollapsibleSection({ title, icon, children, defaultOpen = false }) {
 // tamaño (tirando del punto verde). Comparte el mismo estado que el
 // canvas real, así lo que ves acá es lo que se exporta.
 // =====================================================================
+// Calcula los puntos de una estrella de 5 puntas (mismo algoritmo que se
+// usa al dibujar en el canvas real), para representarla igual en el
+// overlay interactivo.
+function getStarPoints(w, h) {
+  const spikes = 5;
+  const outerR = Math.min(w, h) / 2;
+  const innerR = outerR / 2.4;
+  const cx = w / 2;
+  const cy = h / 2;
+  let rot = (Math.PI / 2) * 3;
+  const step = Math.PI / spikes;
+  const pts = [`${cx},${cy - outerR}`];
+  for (let i = 0; i < spikes; i++) {
+    let x = cx + Math.cos(rot) * outerR;
+    let y = cy + Math.sin(rot) * outerR;
+    pts.push(`${x},${y}`);
+    rot += step;
+    x = cx + Math.cos(rot) * innerR;
+    y = cy + Math.sin(rot) * innerR;
+    pts.push(`${x},${y}`);
+    rot += step;
+  }
+  return pts.join(" ");
+}
+
+// Dibuja la forma real (no siempre un cuadrado) dentro del overlay,
+// usando SVG para que coincida con lo que se exporta al canvas.
+function ShapeSVG({ el }) {
+  const { shapeType, fill, fillOpacity = 1, stroke, strokeWidth = 0, w, h } = el;
+  const hasStroke = strokeWidth > 0;
+  const commonFill = { fill, fillOpacity };
+  const commonStroke = hasStroke ? { stroke, strokeWidth } : { stroke: "none" };
+
+  return (
+    <svg width="100%" height="100%" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ display: "block", overflow: "visible" }}>
+      {shapeType === "rect" && <rect x={0} y={0} width={w} height={h} {...commonFill} {...commonStroke} />}
+      {shapeType === "rounded" && (
+        <rect x={0} y={0} width={w} height={h} rx={Math.min(w, h) * 0.18} ry={Math.min(w, h) * 0.18} {...commonFill} {...commonStroke} />
+      )}
+      {shapeType === "circle" && <ellipse cx={w / 2} cy={h / 2} rx={w / 2} ry={h / 2} {...commonFill} {...commonStroke} />}
+      {shapeType === "triangle" && <polygon points={`${w / 2},0 ${w},${h} 0,${h}`} {...commonFill} {...commonStroke} />}
+      {shapeType === "star" && <polygon points={getStarPoints(w, h)} {...commonFill} {...commonStroke} />}
+      {shapeType === "line" && <line x1={0} y1={h / 2} x2={w} y2={h / 2} stroke={stroke} strokeWidth={Math.max(strokeWidth, 4)} />}
+      {shapeType === "arrow" && (
+        <g stroke={stroke} strokeWidth={Math.max(strokeWidth, 4)} fill="none" strokeLinecap="round" strokeLinejoin="round">
+          <line x1={0} y1={h / 2} x2={w * 0.75} y2={h / 2} />
+          <polyline points={`${w * 0.72},${h * 0.2} ${w},${h / 2} ${w * 0.72},${h * 0.8}`} />
+        </g>
+      )}
+    </svg>
+  );
+}
+
 function CanvasOverlay({
   elementBox, setElementBox, selectedElement, setSelectedElement,
   logo, setLogo, logoImageUrl,
   badge, setBadge, title, setTitle, bullets, setBullets, priceLabel, setPriceLabel, price, setPrice,
+  extraElements, updateExtraElement, selectedExtraId, setSelectedExtraId,
   accent, CW, CH,
 }) {
   const containerRef = useRef(null);
   const [scale, setScale] = useState(0.3);
   const dragRef = useRef(null);
+  const extraDragRef = useRef(null);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -2478,6 +3330,7 @@ function CanvasOverlay({
     e.stopPropagation();
     e.preventDefault();
     setSelectedElement(key);
+    setSelectedExtraId(null);
     const rect = containerRef.current.getBoundingClientRect();
     dragRef.current = { key, mode: "move", startX: e.clientX, startY: e.clientY, origX: elementBox[key].x, origY: elementBox[key].y, rectW: rect.width, rectH: rect.height };
     window.addEventListener("pointermove", onPointerMove);
@@ -2487,9 +3340,63 @@ function CanvasOverlay({
     e.stopPropagation();
     e.preventDefault();
     setSelectedElement(key);
+    setSelectedExtraId(null);
     dragRef.current = { key, mode: "resize", startX: e.clientX, startY: e.clientY, origSize: elementBox[key].fontSize };
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
+  };
+
+  // ---- Arrastre / resize de elementos libres (texto y formas) ----
+  const onExtraPointerMove = (e) => {
+    const d = extraDragRef.current;
+    if (!d) return;
+    const el = extraElements.find((x) => x.id === d.id);
+    if (!el) return;
+    if (d.mode === "move") {
+      const dxPct = ((e.clientX - d.startX) / d.rectW) * 100;
+      const dyPct = ((e.clientY - d.startY) / d.rectH) * 100;
+      updateExtraElement(d.id, { x: Math.max(0, Math.min(92, d.origX + dxPct)), y: Math.max(0, Math.min(95, d.origY + dyPct)) });
+    } else if (d.mode === "resize-text") {
+      const delta = e.clientY - d.startY;
+      updateExtraElement(d.id, { fontSize: Math.max(14, Math.min(160, d.origSize - delta * 0.4)) });
+    } else if (d.mode === "resize-shape") {
+      const dx = e.clientX - d.startX;
+      const dy = e.clientY - d.startY;
+      updateExtraElement(d.id, {
+        w: Math.max(30, d.origW + dx / scale),
+        h: Math.max(30, d.origH + dy / scale),
+      });
+    }
+  };
+  const onExtraPointerUp = () => {
+    extraDragRef.current = null;
+    window.removeEventListener("pointermove", onExtraPointerMove);
+    window.removeEventListener("pointerup", onExtraPointerUp);
+  };
+  const onExtraPointerDownDrag = (el, e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setSelectedExtraId(el.id);
+    setSelectedElement(null);
+    if (el.locked) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    extraDragRef.current = { id: el.id, mode: "move", startX: e.clientX, startY: e.clientY, origX: el.x, origY: el.y, rectW: rect.width, rectH: rect.height };
+    window.addEventListener("pointermove", onExtraPointerMove);
+    window.addEventListener("pointerup", onExtraPointerUp);
+  };
+  const onExtraPointerDownResize = (el, e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setSelectedExtraId(el.id);
+    setSelectedElement(null);
+    if (el.locked) return;
+    if (el.kind === "text") {
+      extraDragRef.current = { id: el.id, mode: "resize-text", startX: e.clientX, startY: e.clientY, origSize: el.fontSize };
+    } else {
+      extraDragRef.current = { id: el.id, mode: "resize-shape", startX: e.clientX, startY: e.clientY, origW: el.w, origH: el.h };
+    }
+    window.addEventListener("pointermove", onExtraPointerMove);
+    window.addEventListener("pointerup", onExtraPointerUp);
   };
 
   const boxStyle = (key) => {
@@ -2501,13 +3408,15 @@ function CanvasOverlay({
       selectedElement === key ? "outline outline-2 outline-emerald-400" : "outline outline-1 outline-dashed outline-transparent hover:outline-white/40"
     } outline-offset-2 rounded px-1`;
   const handle = (key) => (
-    <span
+    <button
       onPointerDown={(e) => onPointerDownDrag(key, e)}
-      className="cursor-move opacity-0 group-hover:opacity-80 text-white text-[10px] select-none shrink-0 mt-0.5"
-      title="Arrastrar"
+      className={`absolute -top-4 -left-4 w-7 h-7 rounded-full bg-emerald-500 text-neutral-950 flex items-center justify-center shadow-lg border border-neutral-900 cursor-move z-10 ${
+        selectedElement === key ? "opacity-100" : "opacity-0 group-hover:opacity-80"
+      }`}
+      title="Arrastrar para mover"
     >
-      ⠿
-    </span>
+      <Move size={13} />
+    </button>
   );
   const resizeHandle = (key) =>
     selectedElement === key && (
@@ -2525,7 +3434,15 @@ function CanvasOverlay({
   const showPrice = !!(priceLabel || price);
 
   return (
-    <div ref={containerRef} className="absolute inset-0" onPointerDown={() => setSelectedElement(null)} style={{ fontFamily: "Manrope, sans-serif" }}>
+    <div
+      ref={containerRef}
+      className="absolute inset-0"
+      onPointerDown={() => {
+        setSelectedElement(null);
+        setSelectedExtraId(null);
+      }}
+      style={{ fontFamily: "Manrope, sans-serif" }}
+    >
       {showLogo && (
         <div style={boxStyle("logo")} className={wrapClass("logo")} onPointerDown={(e) => e.stopPropagation()}>
           <div className="flex items-start gap-1">
@@ -2637,11 +3554,634 @@ function CanvasOverlay({
           {resizeHandle("price")}
         </div>
       )}
+
+      {extraElements.map((el) => {
+        if (el.hidden) return null;
+        const isSelected = selectedExtraId === el.id;
+        const wrap = `group ${
+          isSelected ? "outline outline-2 outline-sky-400" : "outline outline-1 outline-dashed outline-transparent hover:outline-white/40"
+        } outline-offset-2 ${el.locked ? "cursor-not-allowed" : ""}`;
+        if (el.kind === "shape") {
+          const shapeStyle = {
+            position: "absolute",
+            left: `${el.x}%`,
+            top: `${el.y}%`,
+            width: `${el.w * scale}px`,
+            height: `${el.h * scale}px`,
+            opacity: el.opacity ?? 1,
+            transform: `rotate(${el.rotation || 0}deg)`,
+          };
+          return (
+            <div
+              key={el.id}
+              className={wrap}
+              style={shapeStyle}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                if (isSelected && !el.locked) {
+                  // Ya estaba seleccionada: arrastrar desde cualquier parte de la forma.
+                  onExtraPointerDownDrag(el, e);
+                } else {
+                  setSelectedExtraId(el.id);
+                  setSelectedElement(null);
+                }
+              }}
+            >
+              <ShapeSVG el={el} />
+              {isSelected && !el.locked && (
+                <button
+                  onPointerDown={(e) => onExtraPointerDownDrag(el, e)}
+                  className="absolute -top-4 -left-4 w-7 h-7 rounded-full bg-sky-500 text-white flex items-center justify-center shadow-lg border border-neutral-900 cursor-move"
+                  title="Arrastrar para mover"
+                >
+                  <Move size={13} />
+                </button>
+              )}
+              {isSelected && (
+                <span
+                  onPointerDown={(e) => onExtraPointerDownResize(el, e)}
+                  className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-sky-400 rounded-full cursor-nwse-resize border border-neutral-900"
+                />
+              )}
+            </div>
+          );
+        }
+        // texto libre
+        return (
+          <div
+            key={el.id}
+            style={{ position: "absolute", left: `${el.x}%`, top: `${el.y}%`, fontSize: `${el.fontSize * scale}px`, opacity: el.opacity ?? 1, transform: `rotate(${el.rotation || 0}deg)`, maxWidth: `${96 - el.x}%` }}
+            className={`${wrap} rounded px-1`}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-1">
+              {isSelected && !el.locked && (
+                <button
+                  onPointerDown={(e) => onExtraPointerDownDrag(el, e)}
+                  className="absolute -top-4 -left-4 w-7 h-7 rounded-full bg-sky-500 text-white flex items-center justify-center shadow-lg border border-neutral-900 cursor-move z-10"
+                  title="Arrastrar para mover"
+                >
+                  <Move size={13} />
+                </button>
+              )}
+              <div
+                contentEditable={!el.locked}
+                suppressContentEditableWarning
+                onFocus={() => {
+                  setSelectedExtraId(el.id);
+                  setSelectedElement(null);
+                }}
+                onBlur={(e) => !el.locked && updateExtraElement(el.id, { text: e.currentTarget.innerText })}
+                className="outline-none whitespace-pre-wrap"
+                style={{
+                  color: el.color,
+                  fontWeight: el.bold ? 800 : 500,
+                  fontStyle: el.italic ? "italic" : "normal",
+                  textDecoration: el.underline ? "underline" : "none",
+                  backgroundColor: el.bg && el.bg !== "none" ? hexToRgbaCss(el.bgColor, el.bgOpacity ?? 0.5) : "transparent",
+                  borderRadius: el.bg === "pill" || el.bg === "circle" ? "999px" : el.bg === "rounded" ? "8px" : 0,
+                  padding: el.bg && el.bg !== "none" ? "0.2em 0.5em" : 0,
+                }}
+              >
+                {el.text}
+              </div>
+            </div>
+            {isSelected && (
+              <span
+                onPointerDown={(e) => onExtraPointerDownResize(el, e)}
+                className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-sky-400 rounded-full cursor-nwse-resize border border-neutral-900"
+              />
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
+function hexToRgbaCss(hex, alpha) {
+  const num = parseInt((hex || "#000000").replace("#", ""), 16);
+  const r = num >> 16;
+  const g = (num >> 8) & 0x00ff;
+  const b = num & 0x0000ff;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 // Bloque compartido: configuración del logo (texto / imagen / sin logo)
+// Panel de edición del elemento libre seleccionado (texto o forma):
+// color, opacidad, rotación, negrita/cursiva/subrayado, fondo, borde.
+function ExtraElementPanel({ element, updateExtraElement, removeExtraElement, duplicateExtraElement, onClose }) {
+  if (!element) return null;
+  const isText = element.kind === "text";
+  return (
+    <section className="bg-neutral-900 border border-sky-500/50 rounded-2xl p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm md:text-base font-bold text-neutral-200">{isText ? "Editar texto" : "Editar forma"}</h3>
+        <div className="flex items-center gap-3">
+          <button onClick={() => duplicateExtraElement(element.id)} className="text-[11px] md:text-sm text-neutral-400 underline underline-offset-2">
+            Duplicar
+          </button>
+          <button onClick={() => removeExtraElement(element.id)} className="text-[11px] md:text-sm text-rose-400 underline underline-offset-2">
+            Eliminar
+          </button>
+          <button onClick={onClose} className="text-neutral-500">
+            <X size={14} />
+          </button>
+        </div>
+      </div>
+
+      {isText && (
+        <>
+          <div className="flex gap-2">
+            <button
+              onClick={() => updateExtraElement(element.id, { bold: !element.bold })}
+              className={`flex-1 py-2 rounded-lg text-sm font-bold ${element.bold ? "bg-sky-500 text-neutral-950" : "bg-neutral-800 text-neutral-300"}`}
+            >
+              N
+            </button>
+            <button
+              onClick={() => updateExtraElement(element.id, { italic: !element.italic })}
+              className={`flex-1 py-2 rounded-lg text-sm italic ${element.italic ? "bg-sky-500 text-neutral-950" : "bg-neutral-800 text-neutral-300"}`}
+            >
+              I
+            </button>
+            <button
+              onClick={() => updateExtraElement(element.id, { underline: !element.underline })}
+              className={`flex-1 py-2 rounded-lg text-sm underline ${element.underline ? "bg-sky-500 text-neutral-950" : "bg-neutral-800 text-neutral-300"}`}
+            >
+              S
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs md:text-sm text-neutral-400">Color de texto</label>
+              <input
+                type="color"
+                value={element.color}
+                onChange={(e) => updateExtraElement(element.id, { color: e.target.value })}
+                className="w-full h-9 rounded-lg bg-neutral-800 border border-neutral-700"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs md:text-sm text-neutral-400">Color de fondo</label>
+              <input
+                type="color"
+                value={element.bgColor}
+                onChange={(e) => updateExtraElement(element.id, { bgColor: e.target.value })}
+                className="w-full h-9 rounded-lg bg-neutral-800 border border-neutral-700"
+                disabled={element.bg === "none"}
+              />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs md:text-sm text-neutral-400">Fondo del texto</label>
+            <div className="flex gap-1.5">
+              {[
+                { key: "none", label: "Sin fondo" },
+                { key: "rect", label: "Rectángulo" },
+                { key: "rounded", label: "Redondeado" },
+                { key: "pill", label: "Cápsula" },
+              ].map((opt) => (
+                <button
+                  key={opt.key}
+                  onClick={() => updateExtraElement(element.id, { bg: opt.key })}
+                  className={`flex-1 text-[10px] md:text-xs py-1.5 rounded-lg ${
+                    element.bg === opt.key ? "bg-sky-500 text-neutral-950 font-semibold" : "bg-neutral-800 text-neutral-400"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {!isText && (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs md:text-sm text-neutral-400">Color de relleno</label>
+              <input
+                type="color"
+                value={element.fill}
+                onChange={(e) => updateExtraElement(element.id, { fill: e.target.value })}
+                className="w-full h-9 rounded-lg bg-neutral-800 border border-neutral-700"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs md:text-sm text-neutral-400">Color de borde</label>
+              <input
+                type="color"
+                value={element.stroke}
+                onChange={(e) => updateExtraElement(element.id, { stroke: e.target.value })}
+                className="w-full h-9 rounded-lg bg-neutral-800 border border-neutral-700"
+              />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs md:text-sm text-neutral-400">Grosor del borde: {element.strokeWidth}px</label>
+            <input
+              type="range" min={0} max={24}
+              value={element.strokeWidth}
+              onChange={(e) => updateExtraElement(element.id, { strokeWidth: Number(e.target.value) })}
+              className="w-full accent-sky-500"
+            />
+          </div>
+        </>
+      )}
+
+      <div className="space-y-1">
+        <label className="text-xs md:text-sm text-neutral-400">Opacidad: {Math.round((element.opacity ?? 1) * 100)}%</label>
+        <input
+          type="range" min={0.1} max={1} step={0.05}
+          value={element.opacity ?? 1}
+          onChange={(e) => updateExtraElement(element.id, { opacity: Number(e.target.value) })}
+          className="w-full accent-sky-500"
+        />
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs md:text-sm text-neutral-400">Rotación: {element.rotation || 0}°</label>
+        <input
+          type="range" min={-180} max={180}
+          value={element.rotation || 0}
+          onChange={(e) => updateExtraElement(element.id, { rotation: Number(e.target.value) })}
+          className="w-full accent-sky-500"
+        />
+      </div>
+    </section>
+  );
+}
+
+// Botones para agregar texto libre o una forma nueva
+const SHAPE_TYPES = [
+  { key: "rect", label: "▭" },
+  { key: "rounded", label: "▢" },
+  { key: "circle", label: "●" },
+  { key: "triangle", label: "▲" },
+  { key: "line", label: "─" },
+  { key: "arrow", label: "→" },
+  { key: "star", label: "★" },
+];
+
+function AddElementsBar({ addTextElement, addShapeElement }) {
+  return (
+    <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4 space-y-3">
+      <h3 className="text-sm md:text-base font-bold text-neutral-200">Agregar elementos</h3>
+      <button
+        onClick={addTextElement}
+        className="w-full bg-sky-500/15 border border-sky-500/40 text-sky-400 rounded-lg py-2.5 text-sm md:text-base font-semibold flex items-center justify-center gap-2"
+      >
+        <Plus size={16} /> Agregar texto
+      </button>
+      <div className="space-y-1.5">
+        <label className="text-xs md:text-sm text-neutral-400">Agregar forma</label>
+        <div className="grid grid-cols-7 gap-1.5">
+          {SHAPE_TYPES.map((s) => (
+            <button
+              key={s.key}
+              onClick={() => addShapeElement(s.key)}
+              className="aspect-square bg-neutral-800 hover:bg-neutral-700 rounded-lg flex items-center justify-center text-lg text-neutral-200"
+              title={s.key}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// Panel de capas: orden (adelante/atrás), bloquear, ocultar, y selección
+// múltiple para mover/duplicar/eliminar varios elementos a la vez.
+function LayersPanel({
+  extraElements, selectedExtraId, setSelectedExtraId,
+  moveExtraElement, toggleLockElement, toggleHiddenElement,
+  multiSelectIds, toggleMultiSelect, clearMultiSelect,
+  duplicateMany, deleteMany, nudgeMany,
+}) {
+  if (extraElements.length === 0) return null;
+  // Se muestran de arriba (al frente) hacia abajo (al fondo) para que
+  // coincida visualmente con el orden de apilado.
+  const ordered = [...extraElements].map((el, i) => ({ el, idx: i })).reverse();
+
+  return (
+    <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4 space-y-2">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm md:text-base font-bold text-neutral-200">Capas ({extraElements.length})</h3>
+        {multiSelectIds.length > 0 && (
+          <button onClick={clearMultiSelect} className="text-[11px] md:text-sm text-neutral-500 underline underline-offset-2">
+            Deseleccionar
+          </button>
+        )}
+      </div>
+
+      <div className="space-y-1.5">
+        {ordered.map(({ el, idx }) => {
+          const isSelected = selectedExtraId === el.id;
+          const isChecked = multiSelectIds.includes(el.id);
+          const label = el.kind === "text" ? (el.text || "Texto").slice(0, 22) : `Forma: ${el.shapeType}`;
+          return (
+            <div
+              key={el.id}
+              className={`flex items-center gap-2 rounded-lg px-2 py-2 ${isSelected ? "bg-sky-500/10 border border-sky-500/40" : "bg-neutral-800 border border-transparent"}`}
+            >
+              <input type="checkbox" checked={isChecked} onChange={() => toggleMultiSelect(el.id)} className="shrink-0 accent-sky-500" />
+              <button onClick={() => setSelectedExtraId(el.id)} className="flex-1 text-left text-xs md:text-sm text-neutral-200 truncate">
+                {el.kind === "text" ? "🅣" : "▨"} {label}
+              </button>
+              <button onClick={() => moveExtraElement(el.id, "up")} disabled={idx === extraElements.length - 1} className="text-neutral-400 disabled:opacity-30 text-xs px-1">
+                ▲
+              </button>
+              <button onClick={() => moveExtraElement(el.id, "down")} disabled={idx === 0} className="text-neutral-400 disabled:opacity-30 text-xs px-1">
+                ▼
+              </button>
+              <button onClick={() => toggleLockElement(el.id)} className={el.locked ? "text-amber-400" : "text-neutral-500"} title="Bloquear">
+                {el.locked ? "🔒" : "🔓"}
+              </button>
+              <button onClick={() => toggleHiddenElement(el.id)} className={el.hidden ? "text-neutral-600" : "text-neutral-300"} title="Ocultar">
+                {el.hidden ? "🚫" : "👁"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      {multiSelectIds.length > 0 && (
+        <div className="pt-2 space-y-2 border-t border-neutral-800">
+          <p className="text-[11px] md:text-sm text-neutral-400">{multiSelectIds.length} seleccionados</p>
+          <div className="grid grid-cols-3 gap-1.5">
+            <button onClick={() => nudgeMany(multiSelectIds, 0, -3)} className="bg-neutral-800 rounded-lg py-2 text-neutral-200">↑</button>
+            <button onClick={() => nudgeMany(multiSelectIds, -3, 0)} className="bg-neutral-800 rounded-lg py-2 text-neutral-200">←</button>
+            <button onClick={() => nudgeMany(multiSelectIds, 3, 0)} className="bg-neutral-800 rounded-lg py-2 text-neutral-200">→</button>
+            <button onClick={() => nudgeMany(multiSelectIds, 0, 3)} className="bg-neutral-800 rounded-lg py-2 text-neutral-200 col-start-2">↓</button>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => duplicateMany(multiSelectIds)} className="flex-1 bg-sky-500/15 border border-sky-500/40 text-sky-400 rounded-lg py-2 text-xs md:text-sm font-semibold">
+              Duplicar todos
+            </button>
+            <button onClick={() => deleteMany(multiSelectIds)} className="flex-1 bg-rose-500/15 border border-rose-500/40 text-rose-400 rounded-lg py-2 text-xs md:text-sm font-semibold">
+              Eliminar todos
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// Panel de escenas: varias "placas" en secuencia, cada una con su
+// duración, que se graban como un solo video continuo (corte directo).
+function ScenesPanel({
+  scenes, activeSceneIndex, scenePlaying,
+  captureCurrentAsScene, selectSceneForEditing, updateSceneFromCurrent, removeScene, duplicateScene, moveScene,
+  updateSceneField, playAllScenes, startRecordingScenes, isRecording,
+}) {
+  const totalDuration = scenes.reduce((sum, s) => sum + s.duration, 0);
+  return (
+    <section className="bg-neutral-900 border border-violet-500/40 rounded-2xl p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm md:text-base font-bold text-neutral-200">Escenas ({scenes.length})</h3>
+        {scenes.length > 0 && <span className="text-[11px] md:text-sm text-neutral-500">Total: {totalDuration}s</span>}
+      </div>
+      <p className="text-[11px] md:text-sm text-neutral-500 leading-snug">
+        Armá la placa como quieras y tocá "Guardar escena actual" para sumarla a la secuencia. Podés reordenarlas,
+        editar cada una y grabarlas todas juntas como un solo video.
+      </p>
+
+      <button
+        onClick={captureCurrentAsScene}
+        className="w-full bg-violet-500/15 border border-violet-500/40 text-violet-400 rounded-lg py-2.5 text-sm md:text-base font-semibold flex items-center justify-center gap-2"
+      >
+        <Plus size={16} /> Guardar escena actual
+      </button>
+
+      {scenes.length > 0 && (
+        <div className="space-y-2">
+          {scenes.map((s, i) => (
+            <div
+              key={s.id}
+              className={`rounded-lg p-3 space-y-2 border ${
+                activeSceneIndex === i ? "bg-violet-500/10 border-violet-500/50" : "bg-neutral-800 border-transparent"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] md:text-sm font-bold text-neutral-400 shrink-0">{i + 1}.</span>
+                <input
+                  value={s.name}
+                  onChange={(e) => updateSceneField(s.id, "name", e.target.value)}
+                  className="flex-1 bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-xs md:text-sm"
+                />
+                <button onClick={() => moveScene(s.id, "up")} disabled={i === 0} className="text-neutral-400 disabled:opacity-30 text-xs px-1">
+                  ▲
+                </button>
+                <button onClick={() => moveScene(s.id, "down")} disabled={i === scenes.length - 1} className="text-neutral-400 disabled:opacity-30 text-xs px-1">
+                  ▼
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-[11px] md:text-sm text-neutral-500 shrink-0">Duración: {s.duration}s</label>
+                <input
+                  type="range" min={1} max={10}
+                  value={s.duration}
+                  onChange={(e) => updateSceneField(s.id, "duration", Number(e.target.value))}
+                  className="flex-1 accent-violet-500"
+                />
+              </div>
+              <div className="flex gap-1.5">
+                <button
+                  onClick={() => selectSceneForEditing(i)}
+                  className="flex-1 bg-neutral-700 rounded-lg py-1.5 text-[11px] md:text-sm font-semibold text-neutral-200"
+                >
+                  Editar esta escena
+                </button>
+                {activeSceneIndex === i && (
+                  <button
+                    onClick={() => updateSceneFromCurrent(i)}
+                    className="flex-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg py-1.5 text-[11px] md:text-sm font-semibold"
+                  >
+                    Guardar cambios
+                  </button>
+                )}
+                <button onClick={() => duplicateScene(s.id)} className="bg-neutral-700 rounded-lg px-2.5 text-[11px] md:text-sm text-neutral-300">
+                  Duplicar
+                </button>
+                <button onClick={() => removeScene(s.id)} className="bg-neutral-700 rounded-lg px-2.5 text-rose-400">
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            </div>
+          ))}
+
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={playAllScenes}
+              disabled={scenePlaying || isRecording}
+              className="flex-1 bg-neutral-800 border border-neutral-700 rounded-lg py-2.5 text-xs md:text-sm font-semibold text-neutral-200 disabled:opacity-60"
+            >
+              {scenePlaying ? "Reproduciendo…" : "▶ Vista previa de todas"}
+            </button>
+            <button
+              onClick={startRecordingScenes}
+              disabled={isRecording || scenePlaying}
+              className="flex-1 bg-gradient-to-r from-violet-500 to-sky-500 text-neutral-950 rounded-lg py-2.5 text-xs md:text-sm font-bold disabled:opacity-60"
+            >
+              🎬 Grabar todas las escenas
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// Botón + formulario inline para guardar la placa actual como plantilla
+// reutilizable (con variables tipo {{precio}}).
+function SaveTemplateButton({ saveTemplate, TEMPLATE_CATEGORIES, mediaType }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [category, setCategory] = useState(TEMPLATE_CATEGORIES[0]);
+  const [saved, setSaved] = useState(false);
+
+  if (saved) {
+    return (
+      <div className="w-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 rounded-2xl p-4 text-sm md:text-base font-semibold text-center">
+        ✓ Plantilla guardada. La encontrás en "Plantillas".
+      </div>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="w-full bg-neutral-900 border border-violet-500/40 text-violet-400 rounded-2xl p-3.5 text-sm md:text-base font-semibold"
+      >
+        💾 Guardar como plantilla
+      </button>
+    );
+  }
+
+  return (
+    <section className="bg-neutral-900 border border-violet-500/40 rounded-2xl p-4 space-y-3">
+      <h3 className="text-sm md:text-base font-bold text-neutral-200">Guardar como plantilla</h3>
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Nombre de la plantilla"
+        className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-sm md:text-base"
+      />
+      <select
+        value={category}
+        onChange={(e) => setCategory(e.target.value)}
+        className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-sm md:text-base"
+      >
+        {TEMPLATE_CATEGORIES.map((c) => (
+          <option key={c} value={c}>
+            {c}
+          </option>
+        ))}
+      </select>
+      <p className="text-[11px] md:text-sm text-neutral-500">
+        Tip: usá {"{{precio}}"}, {"{{destino}}"}, {"{{fecha}}"}, etc. en cualquier texto antes de guardar, para
+        poder completarlos cada vez que uses esta plantilla.
+      </p>
+      <div className="flex gap-2">
+        <button
+          onClick={() => {
+            saveTemplate(name, category, mediaType);
+            setSaved(true);
+          }}
+          className="flex-1 bg-violet-500 text-neutral-950 font-bold rounded-lg py-2.5 text-sm md:text-base"
+        >
+          Guardar
+        </button>
+        <button onClick={() => setOpen(false)} className="bg-neutral-800 border border-neutral-700 rounded-lg px-4 text-sm md:text-base text-neutral-300">
+          Cancelar
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// Configuración de fondo: desenfoque (aplica a foto/video/degradé) y,
+// para imágenes, la opción de usar un degradé de color personalizado en
+// vez de foto real.
+function BackgroundConfig({ bgMode, setBgMode, bgGradient, setBgGradient, bgBlur, setBgBlur, allowGradient }) {
+  return (
+    <div className="space-y-3">
+      {allowGradient && (
+        <div className="space-y-1">
+          <label className="text-xs md:text-sm text-neutral-400">Tipo de fondo</label>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setBgMode("solid")}
+              className={`flex-1 text-xs md:text-sm font-semibold rounded-lg py-2 transition-colors ${
+                bgMode !== "gradient" ? "bg-emerald-500 text-neutral-950" : "bg-neutral-800 text-neutral-400"
+              }`}
+            >
+              Foto / Color
+            </button>
+            <button
+              onClick={() => setBgMode("gradient")}
+              className={`flex-1 text-xs md:text-sm font-semibold rounded-lg py-2 transition-colors ${
+                bgMode === "gradient" ? "bg-emerald-500 text-neutral-950" : "bg-neutral-800 text-neutral-400"
+              }`}
+            >
+              Degradé
+            </button>
+          </div>
+        </div>
+      )}
+
+      {allowGradient && bgMode === "gradient" && (
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs md:text-sm text-neutral-400">Color 1</label>
+              <input
+                type="color"
+                value={bgGradient.color1}
+                onChange={(e) => setBgGradient((prev) => ({ ...prev, color1: e.target.value }))}
+                className="w-full h-9 rounded-lg bg-neutral-800 border border-neutral-700"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs md:text-sm text-neutral-400">Color 2</label>
+              <input
+                type="color"
+                value={bgGradient.color2}
+                onChange={(e) => setBgGradient((prev) => ({ ...prev, color2: e.target.value }))}
+                className="w-full h-9 rounded-lg bg-neutral-800 border border-neutral-700"
+              />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs md:text-sm text-neutral-400">Ángulo: {bgGradient.angle}°</label>
+            <input
+              type="range" min={0} max={360}
+              value={bgGradient.angle}
+              onChange={(e) => setBgGradient((prev) => ({ ...prev, angle: Number(e.target.value) }))}
+              className="w-full accent-emerald-500"
+            />
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-1">
+        <label className="text-xs md:text-sm text-neutral-400">Desenfoque del fondo: {bgBlur}px</label>
+        <input
+          type="range" min={0} max={20}
+          value={bgBlur}
+          onChange={(e) => setBgBlur(Number(e.target.value))}
+          className="w-full accent-emerald-500"
+        />
+      </div>
+    </div>
+  );
+}
+
 function LogoConfig({ logo, setLogo, logoImageUrl, handleLogoUpload }) {
   return (
     <div className="space-y-3">
@@ -2707,16 +4247,24 @@ function ImageEditorBlock({
   canvasRef, bgImageUrl, bgImageLoading,
   imageUrl, imageCaptureError, captureImage,
   carouselSlides, carouselGenerating, carouselError, generateCarousel, setCarouselSlides,
-  carouselSlideData, carouselSlideCount, setCarouselSlideCount, updateSlideField,
+  carouselSlideData, carouselSlideCount, setCarouselSlideCount, activeCarouselIndex, switchCarouselSlide, downloadCarouselSlide,
   elementBox, setElementBox, selectedElement, setSelectedElement,
   logo, setLogo, logoImageUrl, handleLogoUpload,
+  extraElements, selectedExtraId, setSelectedExtraId, updateExtraElement, removeExtraElement, duplicateExtraElement,
+  addTextElement, addShapeElement,
+  saveTemplate, TEMPLATE_CATEGORIES,
+  bgMode, setBgMode, bgGradient, setBgGradient, bgBlur, setBgBlur,
+  moveExtraElement, toggleLockElement, toggleHiddenElement,
+  multiSelectIds, toggleMultiSelect, clearMultiSelect, duplicateMany, deleteMany, nudgeMany,
+  gridLayout,
   onClose,
 }) {
   const [configOpen, setConfigOpen] = useState(false);
   const { w, h } = FORMATS[canvasFormat];
+  const selectedExtra = extraElements.find((e) => e.id === selectedExtraId) || null;
 
   return (
-    <div className="space-y-4">
+    <div className={gridLayout ? "space-y-4 lg:space-y-0 lg:contents" : "space-y-4"}>
       {onClose && (
         <div className="flex items-center justify-between">
           <h2 className="text-sm md:text-base font-bold text-neutral-200">Editor de placa</h2>
@@ -2726,6 +4274,7 @@ function ImageEditorBlock({
         </div>
       )}
 
+      <div className="lg:col-start-2 lg:sticky lg:top-20 lg:self-start space-y-4">
       <div
         className="relative rounded-2xl overflow-hidden border border-neutral-800 bg-black mx-auto w-full"
         style={{ aspectRatio: `${w}/${h}`, maxWidth: w > h ? "100%" : 420 }}
@@ -2738,6 +4287,8 @@ function ImageEditorBlock({
           badge={badge} setBadge={setBadge} title={title} setTitle={setTitle}
           bullets={bullets} setBullets={setBullets}
           priceLabel={priceLabel} setPriceLabel={setPriceLabel} price={price} setPrice={setPrice}
+          extraElements={extraElements} updateExtraElement={updateExtraElement}
+          selectedExtraId={selectedExtraId} setSelectedExtraId={setSelectedExtraId}
           accent={accent} CW={w} CH={h}
         />
         {bgImageLoading && (
@@ -2756,19 +4307,54 @@ function ImageEditorBlock({
         💡 Tocá cualquier texto para editarlo ahí mismo, arrastralo con el ⠿, o cambiá su tamaño desde el punto
         verde.
       </p>
+      </div>
+
+      <div className="lg:col-start-1">
+      <AddElementsBar addTextElement={addTextElement} addShapeElement={addShapeElement} />
+      </div>
+
+      <div className="lg:col-start-1">
+      <LayersPanel
+        extraElements={extraElements} selectedExtraId={selectedExtraId} setSelectedExtraId={setSelectedExtraId}
+        moveExtraElement={moveExtraElement} toggleLockElement={toggleLockElement} toggleHiddenElement={toggleHiddenElement}
+        multiSelectIds={multiSelectIds} toggleMultiSelect={toggleMultiSelect} clearMultiSelect={clearMultiSelect}
+        duplicateMany={duplicateMany} deleteMany={deleteMany} nudgeMany={nudgeMany}
+      />
+      </div>
+
+      {selectedExtra && (
+        <div className="lg:col-start-3">
+        <ExtraElementPanel
+          element={selectedExtra}
+          updateExtraElement={updateExtraElement}
+          removeExtraElement={removeExtraElement}
+          duplicateExtraElement={duplicateExtraElement}
+          onClose={() => setSelectedExtraId(null)}
+        />
+        </div>
+      )}
 
       <button
         onClick={() => setConfigOpen(!configOpen)}
-        className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl p-3.5 flex items-center justify-between text-sm md:text-base font-semibold text-neutral-200"
+        className="w-full lg:hidden bg-neutral-900 border border-neutral-800 rounded-2xl p-3.5 flex items-center justify-between text-sm md:text-base font-semibold text-neutral-200 lg:col-start-3"
       >
         <span>⚙️ Configuración</span>
         <span className="text-neutral-500 text-xs md:text-sm">{configOpen ? "Ocultar ▲" : "Mostrar ▼"}</span>
       </button>
 
-      {configOpen && (
-        <div className="space-y-4">
+      <div className={`${configOpen ? "block" : "hidden"} lg:block space-y-4 lg:col-start-3`}>
           <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4">
             <FormatPicker canvasFormat={canvasFormat} setCanvasFormat={setCanvasFormat} FORMATS={FORMATS} />
+          </section>
+
+          <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4">
+            <h3 className="text-sm md:text-base font-bold text-neutral-200 mb-3">Fondo</h3>
+            <BackgroundConfig
+              bgMode={bgMode} setBgMode={setBgMode}
+              bgGradient={bgGradient} setBgGradient={setBgGradient}
+              bgBlur={bgBlur} setBgBlur={setBgBlur}
+              allowGradient
+            />
           </section>
 
           <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4 space-y-2">
@@ -2835,12 +4421,11 @@ function ImageEditorBlock({
               {...{ badge, setBadge, title, setTitle, bullets, setBullets, updateBullet, removeBullet, addBullet, priceLabel, setPriceLabel, price, setPrice, layoutStyle }}
             />
           </section>
-        </div>
-      )}
+      </div>
 
       {/* Carrusel generado */}
       {(carouselGenerating || carouselSlides) && (
-        <section className="bg-neutral-900 border border-emerald-500/40 rounded-2xl p-4 space-y-3">
+        <section className="lg:col-start-3 bg-neutral-900 border border-emerald-500/40 rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm md:text-base font-bold text-neutral-200">Carrusel generado ({carouselSlides ? carouselSlides.length : 0} placas)</h2>
             {carouselSlides && (
@@ -2856,50 +4441,50 @@ function ImageEditorBlock({
           )}
           {carouselError && <p className="text-xs md:text-sm text-rose-400">{carouselError}</p>}
           {carouselSlides && carouselSlideData && (
-            <div className="grid grid-cols-2 gap-3">
-              {carouselSlides.map((dataUrl, i) => (
-                <div key={i} className="space-y-1.5">
-                  <img src={dataUrl} alt={`Slide ${i + 1}`} className="w-full rounded-lg border border-neutral-800" style={{ aspectRatio: `${w}/${h}`, objectFit: "cover" }} />
-                  <p className="text-[10px] md:text-xs text-neutral-500 font-semibold">
-                    Slide {i + 1} · {carouselSlideData[i].kind === "cover" ? "Portada" : carouselSlideData[i].kind === "closing" ? "Cierre" : "Tip"}
-                  </p>
-                  {carouselSlideData[i].kind === "cover" ? (
-                    <>
-                      <input
-                        value={carouselSlideData[i].badge}
-                        onChange={(e) => updateSlideField(i, "badge", e.target.value)}
-                        placeholder="Badge"
-                        className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-2 py-1.5 text-[11px] md:text-sm"
-                      />
-                      <textarea
-                        value={carouselSlideData[i].title}
-                        onChange={(e) => updateSlideField(i, "title", e.target.value)}
-                        rows={2}
-                        placeholder="Título"
-                        className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-2 py-1.5 text-[11px] md:text-sm resize-none"
-                      />
-                    </>
-                  ) : (
-                    <textarea
-                      value={carouselSlideData[i].text}
-                      onChange={(e) => updateSlideField(i, "text", e.target.value)}
-                      rows={2}
-                      placeholder="Texto de este slide"
-                      className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-2 py-1.5 text-[11px] md:text-sm resize-none"
-                    />
-                  )}
-                  <a href={dataUrl} download={`placa-carrusel-${i + 1}.png`} className="w-full bg-neutral-800 border border-neutral-700 rounded-lg py-2 flex items-center justify-center gap-1.5 text-[11px] md:text-sm font-semibold">
-                    <Download size={12} /> Descargar slide {i + 1}
-                  </a>
-                </div>
-              ))}
-            </div>
+            <>
+              <p className="text-[11px] md:text-sm text-neutral-500 leading-snug">
+                Tocá una miniatura para editarla arriba, en la vista principal (arrastrar, tocar texto, cambiar
+                tamaño — todo funciona igual ahí). Las miniaturas en sí no se editan directo.
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                {carouselSlides.map((dataUrl, i) => (
+                  <button
+                    key={carouselSlideData[i]?.id || i}
+                    onClick={() => switchCarouselSlide(i)}
+                    className={`relative rounded-lg overflow-hidden border-2 ${
+                      i === activeCarouselIndex ? "border-emerald-400" : "border-neutral-800 hover:border-neutral-600"
+                    }`}
+                    style={{ aspectRatio: `${w}/${h}` }}
+                  >
+                    {dataUrl ? (
+                      <img src={dataUrl} alt={`Slide ${i + 1}`} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full bg-neutral-800" />
+                    )}
+                    <span className="absolute top-1 left-1 bg-black/70 text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                      {i + 1}
+                    </span>
+                    {i === activeCarouselIndex && (
+                      <span className="absolute bottom-1 right-1 bg-emerald-400 text-neutral-950 text-[9px] font-bold rounded-full px-1.5 py-0.5">
+                        Editando
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => downloadCarouselSlide(activeCarouselIndex)}
+                className="w-full bg-neutral-800 border border-neutral-700 rounded-lg py-2.5 flex items-center justify-center gap-1.5 text-xs md:text-sm font-semibold"
+              >
+                <Download size={14} /> Descargar slide {activeCarouselIndex + 1} (la que estás editando)
+              </button>
+            </>
           )}
         </section>
       )}
 
       {/* Export */}
-      <section className="space-y-3">
+      <section className="lg:col-start-3 space-y-3">
         {imageMode === "single" ? (
           <>
             <button onClick={captureImage} className="w-full bg-gradient-to-r from-emerald-500 to-sky-500 text-neutral-950 font-bold rounded-xl py-3.5 flex items-center justify-center gap-2">
@@ -2932,7 +4517,13 @@ function ImageEditorBlock({
         )}
       </section>
 
-      <ChatComingSoon />
+      <div className="lg:col-start-3">
+        <SaveTemplateButton saveTemplate={saveTemplate} TEMPLATE_CATEGORIES={TEMPLATE_CATEGORIES} mediaType="imagen" />
+      </div>
+
+      <div className="lg:col-start-3">
+        <ChatComingSoon />
+      </div>
     </div>
   );
 }
@@ -2954,13 +4545,26 @@ function VideoEditorBlock({
   startRecording, downloadUrl,
   elementBox, setElementBox, selectedElement, setSelectedElement,
   logo, setLogo, logoImageUrl, handleLogoUpload,
+  extraElements, selectedExtraId, setSelectedExtraId, updateExtraElement, removeExtraElement, duplicateExtraElement,
+  addTextElement, addShapeElement,
+  audioUrl, audioName, audioVolume, setAudioVolume, audioFadeIn, setAudioFadeIn, audioFadeOut, setAudioFadeOut,
+  handleAudioUpload, removeAudio, audioRef,
+  saveTemplate, TEMPLATE_CATEGORIES,
+  bgBlur, setBgBlur,
+  moveExtraElement, toggleLockElement, toggleHiddenElement,
+  multiSelectIds, toggleMultiSelect, clearMultiSelect, duplicateMany, deleteMany, nudgeMany,
+  scenes, activeSceneIndex, scenePlaying,
+  captureCurrentAsScene, selectSceneForEditing, updateSceneFromCurrent, removeScene, duplicateScene, moveScene,
+  updateSceneField, playAllScenes, startRecordingScenes,
+  gridLayout,
   onClose,
 }) {
   const [configOpen, setConfigOpen] = useState(false);
   const { w, h } = FORMATS[canvasFormat];
+  const selectedExtra = extraElements.find((e) => e.id === selectedExtraId) || null;
 
   return (
-    <div className="space-y-4">
+    <div className={gridLayout ? "space-y-4 lg:space-y-0 lg:contents" : "space-y-4"}>
       {onClose && (
         <div className="flex items-center justify-between">
           <h2 className="text-sm md:text-base font-bold text-neutral-200">Editor de placa</h2>
@@ -2970,6 +4574,7 @@ function VideoEditorBlock({
         </div>
       )}
 
+      <div className="lg:col-start-2 lg:sticky lg:top-20 lg:self-start space-y-4">
       <div className="relative rounded-2xl overflow-hidden border border-neutral-800 bg-black mx-auto w-full" style={{ aspectRatio: `${w}/${h}`, maxWidth: w > h ? "100%" : 420 }}>
         {videoUrl && (
           <video
@@ -3010,6 +4615,7 @@ function VideoEditorBlock({
             }}
           />
         )}
+        {audioUrl && <audio ref={audioRef} src={audioUrl} loop style={{ display: "none" }} />}
         <canvas ref={canvasRef} width={w} height={h} className="w-full h-full" />
         <CanvasOverlay
           elementBox={elementBox} setElementBox={setElementBox}
@@ -3018,6 +4624,8 @@ function VideoEditorBlock({
           badge={badge} setBadge={setBadge} title={title} setTitle={setTitle}
           bullets={bullets} setBullets={setBullets}
           priceLabel={priceLabel} setPriceLabel={setPriceLabel} price={price} setPrice={setPrice}
+          extraElements={extraElements} updateExtraElement={updateExtraElement}
+          selectedExtraId={selectedExtraId} setSelectedExtraId={setSelectedExtraId}
           accent={accent} CW={w} CH={h}
         />
 
@@ -3050,19 +4658,92 @@ function VideoEditorBlock({
         💡 Tocá cualquier texto para editarlo ahí mismo, arrastralo con el ⠿, o cambiá su tamaño desde el punto
         verde.
       </p>
+      </div>
+
+      <div className="lg:col-start-1">
+      <AddElementsBar addTextElement={addTextElement} addShapeElement={addShapeElement} />
+      </div>
+
+      <div className="lg:col-start-1">
+      <LayersPanel
+        extraElements={extraElements} selectedExtraId={selectedExtraId} setSelectedExtraId={setSelectedExtraId}
+        moveExtraElement={moveExtraElement} toggleLockElement={toggleLockElement} toggleHiddenElement={toggleHiddenElement}
+        multiSelectIds={multiSelectIds} toggleMultiSelect={toggleMultiSelect} clearMultiSelect={clearMultiSelect}
+        duplicateMany={duplicateMany} deleteMany={deleteMany} nudgeMany={nudgeMany}
+      />
+      </div>
+
+      <div className="lg:col-start-1">
+      <ScenesPanel
+        scenes={scenes} activeSceneIndex={activeSceneIndex} scenePlaying={scenePlaying}
+        captureCurrentAsScene={captureCurrentAsScene} selectSceneForEditing={selectSceneForEditing}
+        updateSceneFromCurrent={updateSceneFromCurrent} removeScene={removeScene} duplicateScene={duplicateScene}
+        moveScene={moveScene} updateSceneField={updateSceneField} playAllScenes={playAllScenes}
+        startRecordingScenes={startRecordingScenes} isRecording={isRecording}
+      />
+      </div>
+
+      {selectedExtra && (
+        <div className="lg:col-start-3">
+        <ExtraElementPanel
+          element={selectedExtra}
+          updateExtraElement={updateExtraElement}
+          removeExtraElement={removeExtraElement}
+          duplicateExtraElement={duplicateExtraElement}
+          onClose={() => setSelectedExtraId(null)}
+        />
+        </div>
+      )}
+
+      <section className="lg:col-start-1 bg-neutral-900 border border-neutral-800 rounded-2xl p-4 space-y-3">
+        <h3 className="text-sm md:text-base font-bold text-neutral-200">Música de fondo</h3>
+        {!audioUrl ? (
+          <label className="flex items-center justify-center gap-2 border border-dashed border-neutral-700 rounded-xl py-3 text-sm md:text-base text-neutral-300 cursor-pointer hover:border-neutral-500 transition-colors">
+            <Upload size={16} /> Subir audio (mp3, wav, m4a)
+            <input type="file" accept="audio/*" onChange={handleAudioUpload} className="hidden" />
+          </label>
+        ) : (
+          <>
+            <div className="flex items-center justify-between bg-neutral-800 rounded-lg px-3 py-2">
+              <span className="text-xs md:text-sm text-neutral-300 truncate">{audioName || "Audio cargado"}</span>
+              <button onClick={removeAudio} className="text-rose-400 shrink-0 ml-2">
+                <Trash2 size={15} />
+              </button>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs md:text-sm text-neutral-400">Volumen: {audioVolume}%</label>
+              <input type="range" min={0} max={100} value={audioVolume} onChange={(e) => setAudioVolume(Number(e.target.value))} className="w-full accent-emerald-500" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs md:text-sm text-neutral-400">Fade in: {audioFadeIn}s</label>
+                <input type="range" min={0} max={5} step={0.5} value={audioFadeIn} onChange={(e) => setAudioFadeIn(Number(e.target.value))} className="w-full accent-emerald-500" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs md:text-sm text-neutral-400">Fade out: {audioFadeOut}s</label>
+                <input type="range" min={0} max={5} step={0.5} value={audioFadeOut} onChange={(e) => setAudioFadeOut(Number(e.target.value))} className="w-full accent-emerald-500" />
+              </div>
+            </div>
+          </>
+        )}
+      </section>
 
       <button
         onClick={() => setConfigOpen(!configOpen)}
-        className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl p-3.5 flex items-center justify-between text-sm md:text-base font-semibold text-neutral-200"
+        className="w-full lg:hidden bg-neutral-900 border border-neutral-800 rounded-2xl p-3.5 flex items-center justify-between text-sm md:text-base font-semibold text-neutral-200 lg:col-start-3"
       >
         <span>⚙️ Configuración</span>
         <span className="text-neutral-500 text-xs md:text-sm">{configOpen ? "Ocultar ▲" : "Mostrar ▼"}</span>
       </button>
 
-      {configOpen && (
-        <div className="space-y-4">
+      <div className={`${configOpen ? "block" : "hidden"} lg:block space-y-4 lg:col-start-3`}>
           <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4">
             <FormatPicker canvasFormat={canvasFormat} setCanvasFormat={setCanvasFormat} FORMATS={FORMATS} />
+          </section>
+
+          <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4">
+            <h3 className="text-sm md:text-base font-bold text-neutral-200 mb-3">Fondo</h3>
+            <BackgroundConfig bgBlur={bgBlur} setBgBlur={setBgBlur} allowGradient={false} />
           </section>
 
           <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4 space-y-1">
@@ -3099,10 +4780,9 @@ function VideoEditorBlock({
               {...{ badge, setBadge, title, setTitle, bullets, setBullets, updateBullet, removeBullet, addBullet, priceLabel, setPriceLabel, price, setPrice, layoutStyle }}
             />
           </section>
-        </div>
-      )}
+      </div>
 
-      <section className="space-y-3">
+      <section className="lg:col-start-3 space-y-3">
         <button
           onClick={startRecording}
           disabled={isRecording || !videoUrl}
@@ -3131,7 +4811,13 @@ function VideoEditorBlock({
         </p>
       </section>
 
-      <ChatComingSoon />
+      <div className="lg:col-start-3">
+        <SaveTemplateButton saveTemplate={saveTemplate} TEMPLATE_CATEGORIES={TEMPLATE_CATEGORIES} mediaType="video" />
+      </div>
+
+      <div className="lg:col-start-3">
+        <ChatComingSoon />
+      </div>
     </div>
   );
 }
@@ -3152,7 +4838,7 @@ function ChatComingSoon() {
 // CREAR IMAGEN (pantalla completa dentro de Generador de Placas)
 // =====================================================================
 function CrearImagenScreen({
-  editorProps, apiKey, setApiKey, showKeyHelp, setShowKeyHelp,
+  editorProps, apiKey, goToApis,
   photoQuery, setPhotoQuery, photoResults, photoSearching, photoSearchError, searchPhotosManually, selectPhoto, bgImageUrl,
   photoHasMore, photoLoadingMore, loadMorePhotos,
   handleImageUpload,
@@ -3163,20 +4849,25 @@ function CrearImagenScreen({
   const [loadTab, setLoadTab] = useState("galeria"); // galeria | web
 
   return (
-    <div className="space-y-4">
-      <ExamplesCollapsible EXAMPLES={EXAMPLES} onLoadExample={onLoadExample} />
+    <div className="space-y-4 lg:space-y-0 lg:grid lg:grid-cols-[300px_minmax(0,1fr)_380px] lg:gap-6 lg:items-start">
+      <div className="lg:col-start-1">
+        <ExamplesCollapsible EXAMPLES={EXAMPLES} onLoadExample={onLoadExample} />
+      </div>
 
-      <InlineIdeaSearch
-        ideaTopic={ideaTopic} setIdeaTopic={setIdeaTopic} ideaVariants={ideaVariants} ideaLoading={ideaLoading}
-        ideaError={ideaError} ideaIsTemplate={ideaIsTemplate} generateIdea={generateIdea}
-        mediaLabel="la imagen"
-        onUse={(idea) => {
-          applyIdeaToEditor(idea);
-          const q = (idea.destinations && idea.destinations[0]) || idea.dayName || idea.badge || "";
-          autoSetBackgroundPhoto(q);
-        }}
-      />
+      <div className="lg:col-start-1 lg:mt-4">
+        <InlineIdeaSearch
+          ideaTopic={ideaTopic} setIdeaTopic={setIdeaTopic} ideaVariants={ideaVariants} ideaLoading={ideaLoading}
+          ideaError={ideaError} ideaIsTemplate={ideaIsTemplate} generateIdea={generateIdea}
+          mediaLabel="la imagen"
+          onUse={(idea) => {
+            applyIdeaToEditor(idea);
+            const q = (idea.destinations && idea.destinations[0]) || idea.dayName || idea.badge || "";
+            autoSetBackgroundPhoto(q);
+          }}
+        />
+      </div>
 
+      <div className="lg:col-start-1 lg:mt-4">
       <CollapsibleSection title="Cargar imagen" icon={<ImageIcon size={14} className="text-emerald-400" />}>
         <div className="flex gap-2">
           <button
@@ -3206,37 +4897,27 @@ function CrearImagenScreen({
 
         {loadTab === "web" && (
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-xs md:text-sm text-neutral-400">API key de Pexels (fotos)</label>
-              <button onClick={() => setShowKeyHelp(!showKeyHelp)} className="text-[11px] md:text-sm text-emerald-400 underline underline-offset-2">
-                ¿Cómo la consigo?
+            {!apiKey.trim() ? (
+              <button
+                onClick={goToApis}
+                className="w-full bg-amber-500/10 border border-amber-500/40 text-amber-400 rounded-lg px-3 py-2.5 text-xs md:text-sm font-semibold text-left flex items-center gap-2"
+              >
+                <Key size={14} className="shrink-0" /> Falta configurar tu API key de Pexels — tocá acá para ir a "APIs"
               </button>
-            </div>
-            {showKeyHelp && (
-              <p className="text-[11px] md:text-sm text-neutral-400 leading-relaxed">
-                Entrá a pexels.com/api, creá una cuenta gratis y copiá la key al instante. Sirve para fotos y videos.
-                Se guarda sola para la próxima vez.
-              </p>
+            ) : (
+              <div className="flex gap-2">
+                <input
+                  value={photoQuery}
+                  onChange={(e) => setPhotoQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && searchPhotosManually()}
+                  placeholder="Buscar foto real (ej: Madrid street)"
+                  className="flex-1 bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-xs md:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+                <button onClick={searchPhotosManually} disabled={photoSearching} className="shrink-0 bg-neutral-700 rounded-lg px-3 flex items-center justify-center disabled:opacity-60">
+                  {photoSearching ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+                </button>
+              </div>
             )}
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="Pegá tu API key acá"
-              className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-sm md:text-base focus:outline-none focus:ring-2 focus:ring-emerald-500"
-            />
-            <div className="flex gap-2">
-              <input
-                value={photoQuery}
-                onChange={(e) => setPhotoQuery(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && searchPhotosManually()}
-                placeholder="Buscar foto real (ej: Madrid street)"
-                className="flex-1 bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-xs md:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              />
-              <button onClick={searchPhotosManually} disabled={photoSearching} className="shrink-0 bg-neutral-700 rounded-lg px-3 flex items-center justify-center disabled:opacity-60">
-                {photoSearching ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
-              </button>
-            </div>
             {photoSearchError && <p className="text-[11px] md:text-sm text-rose-400">{photoSearchError}</p>}
             {photoResults.length > 0 && (
               <>
@@ -3267,8 +4948,9 @@ function CrearImagenScreen({
           </div>
         )}
       </CollapsibleSection>
+      </div>
 
-      <ImageEditorBlock {...editorProps} />
+      <ImageEditorBlock {...editorProps} gridLayout />
     </div>
   );
 }
@@ -3277,7 +4959,7 @@ function CrearImagenScreen({
 // CREAR VIDEO (pantalla completa dentro de Generador de Placas)
 // =====================================================================
 function CrearVideoScreen({
-  editorProps, apiKey, setApiKey, showKeyHelp, setShowKeyHelp,
+  editorProps, apiKey, goToApis,
   query, setQuery, results, searching, searchError, doSearch, selectVideo, pickBestFile, videoUrl,
   videoHasMore, videoLoadingMore, loadMoreVideos,
   handleVideoUpload,
@@ -3287,16 +4969,21 @@ function CrearVideoScreen({
   const [loadTab, setLoadTab] = useState("galeria"); // galeria | web
 
   return (
-    <div className="space-y-4">
-      <ExamplesCollapsible EXAMPLES={EXAMPLES} onLoadExample={onLoadExample} />
+    <div className="space-y-4 lg:space-y-0 lg:grid lg:grid-cols-[300px_minmax(0,1fr)_380px] lg:gap-6 lg:items-start">
+      <div className="lg:col-start-1">
+        <ExamplesCollapsible EXAMPLES={EXAMPLES} onLoadExample={onLoadExample} />
+      </div>
 
-      <InlineIdeaSearch
-        ideaTopic={ideaTopic} setIdeaTopic={setIdeaTopic} ideaVariants={ideaVariants} ideaLoading={ideaLoading}
-        ideaError={ideaError} ideaIsTemplate={ideaIsTemplate} generateIdea={generateIdea}
-        mediaLabel="el video"
-        onUse={(idea) => applyIdeaToEditor(idea)}
-      />
+      <div className="lg:col-start-1 lg:mt-4">
+        <InlineIdeaSearch
+          ideaTopic={ideaTopic} setIdeaTopic={setIdeaTopic} ideaVariants={ideaVariants} ideaLoading={ideaLoading}
+          ideaError={ideaError} ideaIsTemplate={ideaIsTemplate} generateIdea={generateIdea}
+          mediaLabel="el video"
+          onUse={(idea) => applyIdeaToEditor(idea)}
+        />
+      </div>
 
+      <div className="lg:col-start-1 lg:mt-4">
       <CollapsibleSection title="Cargar video" icon={<Film size={14} className="text-emerald-400" />}>
         <div className="flex gap-2">
           <button
@@ -3326,37 +5013,27 @@ function CrearVideoScreen({
 
         {loadTab === "web" && (
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-xs md:text-sm text-neutral-400">API key de Pexels (videos)</label>
-              <button onClick={() => setShowKeyHelp(!showKeyHelp)} className="text-[11px] md:text-sm text-emerald-400 underline underline-offset-2">
-                ¿Cómo la consigo?
+            {!apiKey.trim() ? (
+              <button
+                onClick={goToApis}
+                className="w-full bg-amber-500/10 border border-amber-500/40 text-amber-400 rounded-lg px-3 py-2.5 text-xs md:text-sm font-semibold text-left flex items-center gap-2"
+              >
+                <Key size={14} className="shrink-0" /> Falta configurar tu API key de Pexels — tocá acá para ir a "APIs"
               </button>
-            </div>
-            {showKeyHelp && (
-              <p className="text-[11px] md:text-sm text-neutral-400 leading-relaxed">
-                Entrá a pexels.com/api, creá una cuenta gratis y copiá la key al instante. Sirve para fotos y videos.
-                Se guarda sola para la próxima vez.
-              </p>
+            ) : (
+              <div className="flex gap-2">
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && doSearch()}
+                  placeholder="Ej: Formula 1 Brazil track"
+                  className="flex-1 bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2.5 text-sm md:text-base focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+                <button onClick={doSearch} disabled={searching} className="shrink-0 bg-neutral-700 rounded-lg px-4 flex items-center gap-1.5 disabled:opacity-60">
+                  {searching ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
+                </button>
+              </div>
             )}
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="Pegá tu API key acá"
-              className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-sm md:text-base focus:outline-none focus:ring-2 focus:ring-emerald-500"
-            />
-            <div className="flex gap-2">
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && doSearch()}
-                placeholder="Ej: Formula 1 Brazil track"
-                className="flex-1 bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2.5 text-sm md:text-base focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              />
-              <button onClick={doSearch} disabled={searching} className="shrink-0 bg-neutral-700 rounded-lg px-4 flex items-center gap-1.5 disabled:opacity-60">
-                {searching ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
-              </button>
-            </div>
             {searchError && <p className="text-xs md:text-sm text-rose-400">{searchError}</p>}
             {results.length > 0 && (
               <>
@@ -3401,8 +5078,9 @@ function CrearVideoScreen({
           </div>
         )}
       </CollapsibleSection>
+      </div>
 
-      <VideoEditorBlock {...editorProps} />
+      <VideoEditorBlock {...editorProps} gridLayout />
     </div>
   );
 }
@@ -3410,6 +5088,171 @@ function CrearVideoScreen({
 // =====================================================================
 // GENERADOR DE IDEAS
 // =====================================================================
+// =====================================================================
+// PLANTILLAS — biblioteca, búsqueda, filtro por categoría, favoritos,
+// y aplicar con relleno de variables ({{precio}}, {{destino}}, etc.)
+// =====================================================================
+function TemplatesScreen({ templates, templatesLoaded, TEMPLATE_CATEGORIES, extractVariables, applyTemplate, deleteTemplate, duplicateTemplate, toggleFavoriteTemplate }) {
+  const [search, setSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("Todas");
+  const [onlyFavorites, setOnlyFavorites] = useState(false);
+  const [fillingTemplate, setFillingTemplate] = useState(null); // template esperando variables
+  const [varValues, setVarValues] = useState({});
+
+  const filtered = templates.filter((t) => {
+    if (onlyFavorites && !t.favorite) return false;
+    if (categoryFilter !== "Todas" && t.category !== categoryFilter) return false;
+    if (search.trim() && !t.name.toLowerCase().includes(search.trim().toLowerCase())) return false;
+    return true;
+  });
+
+  const startUsingTemplate = (tpl) => {
+    const vars = extractVariables(tpl);
+    if (vars.length === 0) {
+      applyTemplate(tpl, {});
+      return;
+    }
+    setVarValues(Object.fromEntries(vars.map((v) => [v, ""])));
+    setFillingTemplate(tpl);
+  };
+
+  return (
+    <div className="space-y-6 pt-2">
+      <div>
+        <h2 className="text-lg md:text-2xl font-bold">Plantillas</h2>
+        <p className="text-sm md:text-base text-neutral-400 mt-1.5 leading-relaxed">
+          Guardá cualquier placa como plantilla reutilizable. Si le ponés variables como {"{{precio}}"} o{" "}
+          {"{{destino}}"} en los textos, al usarla te las pide y las reemplaza solas en todos lados.
+        </p>
+      </div>
+
+      <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4 space-y-3">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Buscar plantilla por nombre"
+          className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-sm md:text-base"
+        />
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          <button
+            onClick={() => setCategoryFilter("Todas")}
+            className={`shrink-0 text-xs md:text-sm font-semibold rounded-full px-3 py-1.5 ${
+              categoryFilter === "Todas" ? "bg-emerald-500 text-neutral-950" : "bg-neutral-800 text-neutral-400"
+            }`}
+          >
+            Todas
+          </button>
+          {TEMPLATE_CATEGORIES.map((c) => (
+            <button
+              key={c}
+              onClick={() => setCategoryFilter(c)}
+              className={`shrink-0 text-xs md:text-sm font-semibold rounded-full px-3 py-1.5 ${
+                categoryFilter === c ? "bg-emerald-500 text-neutral-950" : "bg-neutral-800 text-neutral-400"
+              }`}
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => setOnlyFavorites(!onlyFavorites)}
+          className={`text-xs md:text-sm font-semibold rounded-full px-3 py-1.5 ${
+            onlyFavorites ? "bg-amber-400 text-neutral-950" : "bg-neutral-800 text-neutral-400"
+          }`}
+        >
+          ★ Solo favoritas
+        </button>
+      </section>
+
+      {fillingTemplate && (
+        <section className="bg-neutral-900 border border-emerald-500/40 rounded-2xl p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm md:text-base font-bold text-neutral-200">Completá los datos de "{fillingTemplate.name}"</h3>
+            <button onClick={() => setFillingTemplate(null)} className="text-neutral-500">
+              <X size={16} />
+            </button>
+          </div>
+          <div className="space-y-2">
+            {Object.keys(varValues).map((key) => (
+              <div key={key} className="space-y-1">
+                <label className="text-xs md:text-sm text-neutral-400">{"{{" + key + "}}"}</label>
+                <input
+                  value={varValues[key]}
+                  onChange={(e) => setVarValues((prev) => ({ ...prev, [key]: e.target.value }))}
+                  className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-sm md:text-base"
+                />
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={() => {
+              applyTemplate(fillingTemplate, varValues);
+              setFillingTemplate(null);
+            }}
+            className="w-full bg-emerald-500 text-neutral-950 font-bold rounded-lg py-2.5 text-sm md:text-base"
+          >
+            Aplicar plantilla
+          </button>
+        </section>
+      )}
+
+      {templatesLoaded && templates.length === 0 && (
+        <div className="text-center py-10 text-neutral-500 text-sm md:text-base">
+          Todavía no guardaste ninguna plantilla. Armá una placa en "Crear Imagen" o "Crear Video" y tocá "Guardar
+          como plantilla" en la configuración.
+        </div>
+      )}
+
+      <div className="space-y-3">
+        {filtered.map((tpl) => {
+          const vars = extractVariables(tpl);
+          return (
+            <div key={tpl.id} className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4 space-y-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    {tpl.mediaType === "video" ? <Film size={13} className="text-sky-400" /> : <ImageIcon size={13} className="text-emerald-400" />}
+                    <span className="text-[10px] md:text-xs font-semibold text-neutral-400 bg-neutral-800 rounded-full px-2 py-0.5">{tpl.category}</span>
+                  </div>
+                  <h3 className="text-sm md:text-base font-bold text-neutral-100">{tpl.name}</h3>
+                </div>
+                <button onClick={() => toggleFavoriteTemplate(tpl.id)} className={tpl.favorite ? "text-amber-400" : "text-neutral-600"}>
+                  ★
+                </button>
+              </div>
+
+              {vars.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {vars.map((v) => (
+                    <span key={v} className="text-[10px] md:text-xs bg-neutral-800 text-neutral-400 rounded-full px-2 py-0.5">
+                      {"{{" + v + "}}"}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => startUsingTemplate(tpl)}
+                  className="flex-1 bg-gradient-to-r from-emerald-500 to-sky-500 text-neutral-950 font-bold rounded-lg py-2.5 text-xs md:text-sm"
+                >
+                  Usar plantilla
+                </button>
+                <button onClick={() => duplicateTemplate(tpl.id)} className="bg-neutral-800 border border-neutral-700 rounded-lg px-3 text-xs md:text-sm text-neutral-300">
+                  Duplicar
+                </button>
+                <button onClick={() => deleteTemplate(tpl.id)} className="bg-neutral-800 border border-neutral-700 rounded-lg px-3 text-rose-400">
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function IdeasScreen({
   ideaTopic, setIdeaTopic, ideaVariants, ideaLoading, ideaError, ideaIsTemplate, generateIdea,
   ideaFormatPref, setIdeaFormatPref,
